@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+/* HeyNanny brand tokens (same as the website, heynanny.in). */
+@theme {
+  --font-sans: var(--font-manrope), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-dm-serif), ui-serif, Georgia, serif;
+
+  --color-plum: #212842; /* Midnight Indigo */
+  --color-plum-soft: #363e5e;
+  --color-milk: #f0e7d5; /* Vanilla Cream */
+  --color-blush: #f6d9d6;
+  --color-rose: #c98588;
+  --color-rose-deep: #93525a;
+  --color-beige: #e8dcc5;
+  --color-paper: #faf6ee;
+  --color-success: #3f8a55;
+  --color-ink: #212842;
+  --color-muted: #5c6078;
+  --color-line: #e2d6c0;
+
+  --shadow-soft: 0 1px 2px rgb(33 40 66 / 0.04), 0 8px 24px -12px rgb(33 40 66 / 0.18);
+  --shadow-lift: 0 2px 4px rgb(33 40 66 / 0.05), 0 18px 40px -16px rgb(33 40 66 / 0.28);
+}
+
+html {
+  font-size: 87.5%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background: var(--color-milk);
+  color: var(--color-ink);
+}
+
+@layer base {
+  .font-display {
+    letter-spacing: -0.01em;
+  }
+}
+
+::selection {
+  background: var(--color-blush);
+  color: var(--color-plum);
+}
+
+.select-chevron {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%235c6078'%3E%3Cpath fill-rule='evenodd' d='M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z' clip-rule='evenodd'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.7rem center;
+  background-size: 1rem;
+  padding-right: 2.1rem;
+}
+
+@keyframes panel-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.panel-in { animation: panel-in 260ms cubic-bezier(0.22, 1, 0.36, 1); }
+.fade-in { animation: fade-in 200ms ease-out; }
+.toast-in { animation: toast-in 220ms cubic-bezier(0.22, 1, 0.36, 1); }
+
+@media (prefers-reduced-motion: reduce) {
+  .panel-in, .fade-in, .toast-in { animation: none; }
+}
