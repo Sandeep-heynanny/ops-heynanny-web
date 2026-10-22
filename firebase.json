@@ -3,7 +3,16 @@
     {
       "backendId": "heynanny-ops",
       "rootDir": "/",
-      "ignore": ["node_modules", ".git", ".next", ".firebase", "service-account*.json", "*-firebase-adminsdk-*.json", "firebase-debug.log", "firebase-debug.*.log"]
+      "ignore": [
+        "node_modules",
+        ".git",
+        ".next",
+        ".firebase",
+        "service-account*.json",
+        "*-firebase-adminsdk-*.json",
+        "firebase-debug.log",
+        "firebase-debug.*.log"
+      ]
     }
   ]
 }
