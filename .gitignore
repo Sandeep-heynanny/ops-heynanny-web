@@ -57,3 +57,6 @@ service-account*.json
 
 # Local data backups (contain customer phone numbers)
 backups/
+
+# temporary build-check archive
+.ops-src.tgz

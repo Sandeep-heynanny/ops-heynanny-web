@@ -12,7 +12,8 @@
         "service-account*.json",
         "*-firebase-adminsdk-*.json",
         "firebase-debug.log",
-        "firebase-debug.*.log"
+        "firebase-debug.*.log",
+        ".ops-src.tgz"
       ]
     }
   ]

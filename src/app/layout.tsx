@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 
+import { ConfirmHost } from "@/components/ConfirmDialog";
+
 import "./globals.css";
 
 const manrope = localFont({
@@ -32,7 +34,10 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en-IN" className={`${manrope.variable} ${dmSerif.variable} antialiased`}>
-      <body className="min-h-dvh font-sans">{children}</body>
+      <body className="min-h-dvh font-sans">
+        {children}
+        <ConfirmHost />
+      </body>
     </html>
   );
 }

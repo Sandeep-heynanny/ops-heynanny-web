@@ -2,8 +2,11 @@
 /**
  * Give or remove dashboard access.
  *
- *   npm run role -- priya@heynanny.in ops      # can view and update bookings
- *   npm run role -- sandeep@heynanny.in admin  # same, plus admin-only actions
+ *   npm run role -- priya@heynanny.in sales      # sales: Enquiries only ("ops" is the old name)
+ *   npm run role -- ravi@heynanny.in servicing   # servicing team: Servicing + Nannies (add/edit)
+ *   npm run role -- asha@heynanny.in supply      # supply team: Nannies only (view, add, edit)
+ *   npm run role -- meera@heynanny.in manager    # everything except Payments; can import nannies
+ *   npm run role -- sandeep@heynanny.in admin    # everything
  *   npm run role -- priya@heynanny.in none     # remove access (signs them out)
  *   npm run role -- --list                     # who has access
  *   npm run role -- --sync                     # rebuild the "Assigned to" staff list from current roles
@@ -26,7 +29,8 @@ import { FieldValue, getFirestore } from "firebase-admin/firestore";
 
 const PROJECT_ID = "hey-nanny-web";
 const DOMAIN = "@heynanny.in";
-const ROLES = ["ops", "admin", "none"];
+const ROLES = ["sales", "servicing", "supply", "manager", "admin", "none"];
+const STAFF = ROLES.filter((r) => r !== "none");
 
 const keyPath = new URL("../service-account.json", import.meta.url);
 const hasKey = existsSync(keyPath);
@@ -69,8 +73,14 @@ async function sync() {
   do {
     const page = await auth.listUsers(1000, token);
     for (const u of page.users) {
-      const role = u.customClaims?.role;
-      if (u.email?.toLowerCase().endsWith(DOMAIN) && (role === "ops" || role === "admin")) {
+      let role = u.customClaims?.role;
+      // "ops" was renamed "sales": move old accounts over.
+      if (role === "ops") {
+        role = "sales";
+        await auth.setCustomUserClaims(u.uid, { ...u.customClaims, role });
+        console.log(`${u.email}: ops → sales`);
+      }
+      if (u.email?.toLowerCase().endsWith(DOMAIN) && STAFF.includes(role)) {
         await writeStaff(u, role);
         keep.add(u.uid);
       }
@@ -89,7 +99,7 @@ async function list() {
   const rows = [];
   do {
     const page = await auth.listUsers(1000, token);
-    for (const u of page.users) if (u.customClaims?.role) rows.push(`${u.customClaims.role.padEnd(6)} ${u.email}`);
+    for (const u of page.users) if (u.customClaims?.role) rows.push(`${u.customClaims.role.padEnd(9)} ${u.email}`);
     token = page.pageToken;
   } while (token);
   console.log(rows.length ? rows.sort().join("\n") : "Nobody has access yet.");
@@ -97,6 +107,7 @@ async function list() {
 
 async function setRole(email, role) {
   if (!email?.toLowerCase().endsWith(DOMAIN)) throw new Error(`Only ${DOMAIN} accounts can be given access.`);
+  if (role === "ops") role = "sales"; // old name
   if (!ROLES.includes(role)) throw new Error(`Role must be one of: ${ROLES.join(", ")}`);
   let user;
   try {
@@ -125,7 +136,7 @@ try {
   else if (arg1 === "--sync") await sync();
   else if (arg1 && arg2) await setRole(arg1.trim(), arg2.trim());
   else {
-    console.log("Usage: npm run role -- <email@heynanny.in> <ops|admin|none>   |   npm run role -- --list   |   npm run role -- --sync");
+    console.log("Usage: npm run role -- <email@heynanny.in> <sales|servicing|supply|manager|admin|none>   |   npm run role -- --list   |   npm run role -- --sync");
     process.exitCode = 1;
   }
 } catch (err) {

@@ -4,6 +4,8 @@ import { useState } from "react";
 
 import { Dashboard } from "@/components/Dashboard";
 import { LoadingScreen, NoAccessScreen, SignInScreen } from "@/components/SignIn";
+import { homeFor, RedirectTo } from "@/components/StaffGate";
+import { canSeeEnquiries } from "@/lib/firebase";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { DEMO_STAFF, demoLeads } from "@/lib/demo";
 
@@ -28,6 +30,8 @@ function Gate({ demo }: { demo?: ReturnType<typeof demoLeads> }) {
     case "denied":
       return <NoAccessScreen email={state.email} reason={state.reason} />;
     case "ready":
+      // The servicing team doesn't see enquiries; send them to their own page.
+      if (!canSeeEnquiries(state.staff.role)) return <RedirectTo href={homeFor(state.staff.role)} />;
       return <Dashboard staff={state.staff} demo={demo} />;
   }
 }

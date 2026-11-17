@@ -71,3 +71,10 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .panel-in, .fade-in, .toast-in { animation: none; }
 }
+
+@keyframes confirm-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+}

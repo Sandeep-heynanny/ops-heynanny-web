@@ -1,5 +1,6 @@
 "use client";
 
+import type { ServicingFormValue } from "@/lib/servicing-form";
 import {
   collection,
   deleteDoc,
@@ -16,7 +17,7 @@ import {
 } from "firebase/firestore";
 import { useEffect, useRef, useState } from "react";
 
-import { db } from "@/lib/firebase";
+import { auth, db } from "@/lib/firebase";
 import type { CloseReason, Lead, LeadStatus } from "@/lib/types";
 
 /** Newest first. Add pagination / date filters in the query when this grows. */
@@ -41,7 +42,11 @@ export function useLeads(enabled: boolean, demo?: Lead[]): LeadsState {
 
   useEffect(() => {
     if (!enabled || demo) return;
-    const q = query(collection(db(), "leads"), orderBy("createdAt", "desc"), limit(MAX_LEADS));
+    const q = query(
+      collection(db(), "leads"),
+      orderBy("createdAt", "desc"),
+      limit(MAX_LEADS),
+    );
     return onSnapshot(
       q,
       (snap) => {
@@ -73,7 +78,13 @@ export function useLeads(enabled: boolean, demo?: Lead[]): LeadsState {
     );
   }, [enabled, demo]);
 
-  return { leads, loading, error, arrivals, clearArrivals: () => setArrivals([]) };
+  return {
+    leads,
+    loading,
+    error,
+    arrivals,
+    clearArrivals: () => setArrivals([]),
+  };
 }
 
 const STATUS_STAMP: Partial<Record<LeadStatus, string>> = {
@@ -90,7 +101,13 @@ export async function deleteLead(lead: Lead) {
 /** Save the ops fields. Rules only allow `status`, `ops.*` and `updatedAt` to change. */
 export async function saveLeadUpdate(
   lead: Lead,
-  change: { status: LeadStatus; notes: string; assignedTo: string; callbackAt: Date | null; closeReason: CloseReason | null },
+  change: {
+    status: LeadStatus;
+    notes: string;
+    assignedTo: string;
+    callbackAt: Date | null;
+    closeReason: CloseReason | null;
+  },
   by: string,
 ) {
   const patch: Record<string, string | FieldValue | Timestamp | CloseReason> = {
@@ -99,12 +116,46 @@ export async function saveLeadUpdate(
     "ops.assignedTo": change.assignedTo.trim() || deleteField(),
     "ops.updatedBy": by,
     // Call backs only apply while a lead is "contacted".
-    "ops.callbackAt": change.status === "contacted" && change.callbackAt ? Timestamp.fromDate(change.callbackAt) : deleteField(),
+    "ops.callbackAt":
+      change.status === "contacted" && change.callbackAt
+        ? Timestamp.fromDate(change.callbackAt)
+        : deleteField(),
     // The reason only applies while a lead is "not interested".
-    "ops.closeReason": change.status === "not_interested" && change.closeReason ? change.closeReason : deleteField(),
+    "ops.closeReason":
+      change.status === "not_interested" && change.closeReason
+        ? change.closeReason
+        : deleteField(),
     updatedAt: serverTimestamp(),
   };
   const stamp = STATUS_STAMP[change.status];
   if (stamp && change.status !== lead.status) patch[stamp] = serverTimestamp();
   await updateDoc(doc(db(), "leads", lead.id), patch);
+}
+
+/**
+ * Hand a converted enquiry to the servicing team (creates or links their case on
+ * the server; the ops team can't write servicing data directly).
+ */
+export async function sendToServicing(
+  lead: Pick<Lead, "id">,
+  form: ServicingFormValue,
+): Promise<{ outcome: string; caseId: string | null }> {
+  const user = auth().currentUser;
+  if (!user) throw new Error("Not signed in");
+  const res = await fetch("/api/servicing/from-lead", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${await user.getIdToken()}`,
+    },
+    body: JSON.stringify({ leadId: lead.id, form }),
+  });
+  const body = (await res.json().catch(() => null)) as {
+    outcome?: string;
+    caseId?: string | null;
+    error?: string;
+  } | null;
+  if (!res.ok || !body)
+    throw new Error(body?.error ?? "Couldn't submit the form.");
+  return { outcome: body.outcome ?? "created", caseId: body.caseId ?? null };
 }

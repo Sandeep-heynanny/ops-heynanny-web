@@ -1,6 +1,12 @@
-import { getApp, getApps, initializeApp, type FirebaseOptions } from "firebase/app";
+import {
+  getApp,
+  getApps,
+  initializeApp,
+  type FirebaseOptions,
+} from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage";
 
 /**
  * Same Firebase project as the website (hey-nanny-web), registered as the
@@ -18,17 +24,64 @@ const config: FirebaseOptions = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-export const isFirebaseConfigured = Boolean(config.apiKey && config.projectId && config.appId);
+export const isFirebaseConfigured = Boolean(
+  config.apiKey && config.projectId && config.appId,
+);
 
 function app() {
-  if (!isFirebaseConfigured) throw new Error("Firebase is not configured. Copy .env.example to .env.local.");
+  if (!isFirebaseConfigured)
+    throw new Error(
+      "Firebase is not configured. Copy .env.example to .env.local.",
+    );
   return getApps().length ? getApp() : initializeApp(config);
 }
 
 export const auth = () => getAuth(app());
 export const db = () => getFirestore(app());
+export const storage = () => getStorage(app());
 
 /** Only Google Workspace accounts on this domain can use the dashboard. */
 export const STAFF_DOMAIN = "heynanny.in";
-export const STAFF_ROLES = ["ops", "admin"] as const;
+/**
+ * Roles (Sandeep, 2026-11-17):
+ *   admin     everything
+ *   manager   everything except Payments
+ *   sales     Enquiries only (was called "ops"; old "ops" accounts are treated as sales)
+ *   servicing Servicing (all of it) + Nannies (view, add, edit)
+ *   supply    Nannies only (view, add, edit)
+ */
+export const STAFF_ROLES = [
+  "sales",
+  "servicing",
+  "supply",
+  "manager",
+  "admin",
+] as const;
 export type StaffRole = (typeof STAFF_ROLES)[number];
+
+/** The role claim on a sign-in token, with the old name "ops" read as "sales". */
+export function roleFromClaim(claim: unknown): StaffRole | null {
+  if (claim === "ops") return "sales";
+  return typeof claim === "string" &&
+    (STAFF_ROLES as readonly string[]).includes(claim)
+    ? (claim as StaffRole)
+    : null;
+}
+
+/** What each role can open. Firestore and Storage rules enforce the same split. */
+export const canSeeEnquiries = (role: StaffRole) =>
+  role === "sales" || role === "manager" || role === "admin";
+export const canSeeServicing = (role: StaffRole) =>
+  role === "servicing" || role === "manager" || role === "admin";
+/** Nannies page: view, add and edit nannies (photos, documents). */
+export const canSeeNannies = (role: StaffRole) =>
+  role === "servicing" ||
+  role === "supply" ||
+  role === "manager" ||
+  role === "admin";
+export const canSeePayments = (role: StaffRole) => role === "admin";
+/** Only admins may export / download nanny data (it's sensitive). */
+export const canExportNannies = (role: StaffRole) => role === "admin";
+/** Managers and admins can bulk-import nannies from a CSV. */
+export const canImportNannies = (role: StaffRole) =>
+  role === "manager" || role === "admin";

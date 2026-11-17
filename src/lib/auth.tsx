@@ -7,11 +7,31 @@ import {
   signOut as fbSignOut,
   type User,
 } from "firebase/auth";
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 
-import { auth, isFirebaseConfigured, STAFF_DOMAIN, STAFF_ROLES, type StaffRole } from "@/lib/firebase";
+import {
+  auth,
+  isFirebaseConfigured,
+  roleFromClaim,
+  STAFF_DOMAIN,
+  type StaffRole,
+} from "@/lib/firebase";
 
-export type Staff = { uid: string; email: string; name: string; photo: string | null; role: StaffRole };
+export type Staff = {
+  uid: string;
+  email: string;
+  name: string;
+  photo: string | null;
+  role: StaffRole;
+};
 
 type AuthState =
   | { status: "loading" }
@@ -37,30 +57,44 @@ function isStaffEmail(email: string | null | undefined) {
 async function resolve(user: User, forceRefresh = false): Promise<AuthState> {
   if (user.isAnonymous) return { status: "signed-out" };
   const email = user.email ?? "";
-  if (!isStaffEmail(email)) return { status: "denied", email, reason: "domain" };
+  if (!isStaffEmail(email))
+    return { status: "denied", email, reason: "domain" };
   const token = await user.getIdTokenResult(forceRefresh);
-  const role = token.claims.role;
-  if (typeof role !== "string" || !(STAFF_ROLES as readonly string[]).includes(role)) {
-    return { status: "denied", email, reason: "role" };
-  }
+  const role = roleFromClaim(token.claims.role);
+  if (!role) return { status: "denied", email, reason: "role" };
   return {
     status: "ready",
-    staff: { uid: user.uid, email, name: user.displayName || email.split("@")[0]!, photo: user.photoURL, role: role as StaffRole },
+    staff: {
+      uid: user.uid,
+      email,
+      name: user.displayName || email.split("@")[0]!,
+      photo: user.photoURL,
+      role,
+    },
   };
 }
 
 /**
  * Google sign-in, limited to @heynanny.in accounts, and only for people an
- * admin has given a role (`npm run role -- name@heynanny.in ops`).
+ * admin has given a role (`npm run role -- name@heynanny.in sales`).
  * The real protection is in Firestore rules; this only decides what to show.
  */
-export function AuthProvider({ children, demo }: { children: ReactNode; demo?: Staff }) {
+export function AuthProvider({
+  children,
+  demo,
+}: {
+  children: ReactNode;
+  demo?: Staff;
+}) {
   const [state, setState] = useState<AuthState>(() =>
     demo
       ? { status: "ready", staff: demo }
       : isFirebaseConfigured
         ? { status: "loading" }
-        : { status: "signed-out", error: "Firebase isn't configured. Add .env.local (see README)." },
+        : {
+            status: "signed-out",
+            error: "Firebase isn't configured. Add .env.local (see README).",
+          },
   );
 
   useEffect(() => {
@@ -70,7 +104,10 @@ export function AuthProvider({ children, demo }: { children: ReactNode; demo?: S
       try {
         setState(await resolve(user));
       } catch {
-        setState({ status: "signed-out", error: "Couldn't check your access. Please try again." });
+        setState({
+          status: "signed-out",
+          error: "Couldn't check your access. Please try again.",
+        });
       }
     });
   }, [demo]);
@@ -78,12 +115,19 @@ export function AuthProvider({ children, demo }: { children: ReactNode; demo?: S
   const signIn = useCallback(async () => {
     const provider = new GoogleAuthProvider();
     // Shows only @heynanny.in accounts in Google's picker (also checked after sign-in).
-    provider.setCustomParameters({ hd: STAFF_DOMAIN, prompt: "select_account" });
+    provider.setCustomParameters({
+      hd: STAFF_DOMAIN,
+      prompt: "select_account",
+    });
     try {
       await signInWithPopup(auth(), provider);
     } catch (err) {
       const code = (err as { code?: string }).code ?? "";
-      if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") return;
+      if (
+        code === "auth/popup-closed-by-user" ||
+        code === "auth/cancelled-popup-request"
+      )
+        return;
       setState({
         status: "signed-out",
         error:
@@ -106,7 +150,10 @@ export function AuthProvider({ children, demo }: { children: ReactNode; demo?: S
     if (user) setState(await resolve(user, true));
   }, []);
 
-  const value = useMemo(() => ({ state, signIn, signOut, recheck }), [state, signIn, signOut, recheck]);
+  const value = useMemo(
+    () => ({ state, signIn, signOut, recheck }),
+    [state, signIn, signOut, recheck],
+  );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 

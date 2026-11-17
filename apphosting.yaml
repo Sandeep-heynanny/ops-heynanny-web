@@ -26,3 +26,25 @@ env:
   - variable: NEXT_PUBLIC_FIREBASE_APP_ID
     value: 1:721087730968:web:738a5a8d41873c9c54ba6d
     availability: [BUILD, RUNTIME]
+
+  # ---------------- Google Maps (location picker in the Servicing form and on nannies) ----------------
+  # A browser key, restricted to https://ops.heynanny.in/* and http://localhost:*/* with only
+  # "Maps JavaScript API" and "Places API (New)" allowed. Public by design (like the Firebase key).
+  # Without it, location is a plain text box.
+  - variable: NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
+    value: AIzaSyAqmkv5ZZ5rdTDp3NzRtG3Jx-1FferfGNY
+    availability: [BUILD, RUNTIME]
+
+  # ---------------- Cashfree (Payments → Settlements, refund import) ----------------
+  # Same secrets as the website, read only on the server (/api/cashfree/*).
+  # Give this backend access once:
+  #   firebase apphosting:secrets:grantaccess CASHFREE_CLIENT_ID,CASHFREE_CLIENT_SECRET --backend heynanny-ops
+  - variable: CASHFREE_ENV
+    value: production
+    availability: [RUNTIME]
+  - variable: CASHFREE_CLIENT_ID
+    secret: CASHFREE_CLIENT_ID
+    availability: [RUNTIME]
+  - variable: CASHFREE_CLIENT_SECRET
+    secret: CASHFREE_CLIENT_SECRET
+    availability: [RUNTIME]

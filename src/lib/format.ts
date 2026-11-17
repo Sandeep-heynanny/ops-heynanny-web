@@ -1,6 +1,19 @@
 import type { Timestamp } from "firebase/firestore";
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
 
 /** "2026-09-26" → "26 Sep 2026" */
 export function formatDate(iso: string): string {
@@ -12,10 +25,13 @@ export function formatDate(iso: string): string {
 /** "14:30" → "2:30 PM" */
 export function formatTime(hhmm: string): string {
   const [h, m] = hhmm.split(":").map(Number);
-  if (h === undefined || m === undefined || Number.isNaN(h) || Number.isNaN(m)) return hhmm;
+  if (h === undefined || m === undefined || Number.isNaN(h) || Number.isNaN(m))
+    return hhmm;
   const period = h >= 12 ? "PM" : "AM";
   const h12 = h % 12 === 0 ? 12 : h % 12;
-  return m === 0 ? `${h12} ${period}` : `${h12}:${String(m).padStart(2, "0")} ${period}`;
+  return m === 0
+    ? `${h12} ${period}`
+    : `${h12}:${String(m).padStart(2, "0")} ${period}`;
 }
 
 /** "+919876543210" → "+91 98765 43210" */
@@ -31,19 +47,27 @@ export function whatsappLink(phone: string, text?: string): string {
   return `https://wa.me/${withCc}${text ? `?text=${encodeURIComponent(text)}` : ""}`;
 }
 
-const inr = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
+const inr = new Intl.NumberFormat("en-IN", {
+  style: "currency",
+  currency: "INR",
+  maximumFractionDigits: 0,
+});
 export const formatINR = (n: number) => inr.format(n);
 
-export const toDate = (t: Timestamp | null | undefined) => (t ? t.toDate() : null);
+export const toDate = (t: Timestamp | null | undefined) =>
+  t ? t.toDate() : null;
 
 /** "Just now", "12 min ago", "3 h ago", "Yesterday, 4:10 PM", "12 Oct, 9:05 AM" */
 export function formatReceived(d: Date | null, now = new Date()): string {
   if (!d) return "Just now";
   const diff = (now.getTime() - d.getTime()) / 60000;
-  const time = d.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" }).toUpperCase();
+  const time = d
+    .toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })
+    .toUpperCase();
   if (diff < 1) return "Just now";
   if (diff < 60) return `${Math.floor(diff)} min ago`;
-  if (isSameDay(d, now) && diff < 6 * 60) return `${Math.floor(diff / 60)} h ago`;
+  if (isSameDay(d, now) && diff < 6 * 60)
+    return `${Math.floor(diff / 60)} h ago`;
   if (isSameDay(d, now)) return `Today, ${time}`;
   const y = new Date(now);
   y.setDate(now.getDate() - 1);
@@ -53,12 +77,18 @@ export function formatReceived(d: Date | null, now = new Date()): string {
 
 export function formatDateTime(d: Date | null): string {
   if (!d) return "—";
-  const time = d.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" }).toUpperCase();
+  const time = d
+    .toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })
+    .toUpperCase();
   return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}, ${time}`;
 }
 
 export function isSameDay(a: Date, b: Date) {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
 }
 
 export function localISODate(d: Date) {
@@ -88,7 +118,10 @@ export function callbackState(d: Date, now = new Date()): CallbackState {
 
 /** "Today, 4 PM" / "Tomorrow, 10 AM" / "18 Nov, 10 AM" (with "Overdue · " when past). */
 export function formatCallback(d: Date, now = new Date()): string {
-  const time = d.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" }).toUpperCase().replace(":00 ", " ");
+  const time = d
+    .toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })
+    .toUpperCase()
+    .replace(":00 ", " ");
   const tomorrow = new Date(now);
   tomorrow.setDate(now.getDate() + 1);
   const yesterday = new Date(now);
@@ -101,4 +134,25 @@ export function formatCallback(d: Date, now = new Date()): string {
         ? "Yesterday"
         : `${d.getDate()} ${MONTHS[d.getMonth()]}`;
   return `${d <= now ? "Overdue · " : ""}${day}, ${time}`;
+}
+
+/** Cashfree-style short rupees: ₹950, ₹12.5K, ₹3.66L, ₹1.2Cr. */
+export function formatINRShort(n: number): string {
+  const abs = Math.abs(n);
+  const sign = n < 0 ? "−" : "";
+  const trim = (x: number) => String(Number(x.toFixed(2)));
+  if (abs >= 1e7) return `${sign}₹${trim(abs / 1e7)}Cr`;
+  if (abs >= 1e5) return `${sign}₹${trim(abs / 1e5)}L`;
+  if (abs >= 1e3) return `${sign}₹${trim(abs / 1e3)}K`;
+  return `${sign}₹${trim(abs)}`;
+}
+
+/** Exact rupees with paise when present: ₹93,867.64 / ₹3,66,000. */
+export function formatINRExact(n: number): string {
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    minimumFractionDigits: Number.isInteger(n) ? 0 : 2,
+    maximumFractionDigits: 2,
+  }).format(n);
 }

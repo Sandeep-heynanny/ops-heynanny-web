@@ -1,19 +1,41 @@
 import type { Timestamp } from "firebase/firestore";
 
+import type { ServicingFormValue } from "@/lib/servicing-form";
+
 /**
  * Ops workflow for website enquiries. The website saves every lead as "new";
  * the ops team moves it to contacted → converted / not interested.
  */
 export type LeadStatus = "new" | "contacted" | "converted" | "not_interested";
 
-export const STATUS_META: Record<LeadStatus, { label: string; tone: string; dot: string }> = {
+export const STATUS_META: Record<
+  LeadStatus,
+  { label: string; tone: string; dot: string }
+> = {
   new: { label: "New", tone: "bg-blush text-rose-deep", dot: "bg-rose" },
-  contacted: { label: "Contacted", tone: "bg-[#fbecc8] text-[#7a5410]", dot: "bg-[#d9a23a]" },
-  converted: { label: "Converted", tone: "bg-[#dcefe1] text-success", dot: "bg-success" },
-  not_interested: { label: "Not interested", tone: "bg-beige text-muted", dot: "bg-muted/60" },
+  contacted: {
+    label: "Contacted",
+    tone: "bg-[#fbecc8] text-[#7a5410]",
+    dot: "bg-[#d9a23a]",
+  },
+  converted: {
+    label: "Converted",
+    tone: "bg-[#dcefe1] text-success",
+    dot: "bg-success",
+  },
+  not_interested: {
+    label: "Not interested",
+    tone: "bg-beige text-muted",
+    dot: "bg-muted/60",
+  },
 };
 
-export const STATUS_ORDER: LeadStatus[] = ["new", "contacted", "converted", "not_interested"];
+export const STATUS_ORDER: LeadStatus[] = [
+  "new",
+  "contacted",
+  "converted",
+  "not_interested",
+];
 
 /** Fields only the ops team writes (Firestore rules allow staff to change only status, ops.* and updatedAt). */
 export type OpsFields = {
@@ -22,6 +44,14 @@ export type OpsFields = {
   updatedBy?: string;
   contactedAt?: Timestamp;
   convertedAt?: Timestamp;
+  /** Set once the customer has been handed to servicing (written by the server). */
+  servicingCaseId?: string;
+  servicingAt?: Timestamp;
+  /** The sales team's Servicing form was submitted: only then is the customer with servicing. */
+  servicingFormAt?: Timestamp;
+  /** Copy of the submitted form (the ops team can't read servicing cases). */
+  servicingForm?: ServicingFormValue;
+  servicingFormBy?: string;
   closedAt?: Timestamp;
   /** When to call a contacted lead back. Shown as a reminder on the dashboard. */
   callbackAt?: Timestamp;
@@ -33,7 +63,10 @@ export type CloseCategory = "unqualified" | "lost" | "dropped";
 export type CloseReason = { category: CloseCategory; reason: string };
 
 /** Reasons for not going ahead with a lead, grouped by outcome. Edit the lists here. */
-export const CLOSE_REASONS: Record<CloseCategory, { label: string; hint: string; reasons: string[] }> = {
+export const CLOSE_REASONS: Record<
+  CloseCategory,
+  { label: string; hint: string; reasons: string[] }
+> = {
   unqualified: {
     label: "Unqualified",
     hint: "Was never a real customer lead",
@@ -123,7 +156,12 @@ export type MetaInfo = {
 
 export const META_CHANNEL = "meta_lead_ad";
 
-const PLATFORM_NAMES: Record<string, string> = { fb: "Facebook", ig: "Instagram", msg: "Messenger", wa: "WhatsApp" };
+const PLATFORM_NAMES: Record<string, string> = {
+  fb: "Facebook",
+  ig: "Instagram",
+  msg: "Messenger",
+  wa: "WhatsApp",
+};
 
 export function metaPlatform(platform: string | null | undefined) {
   return (platform && PLATFORM_NAMES[platform]) || "Meta";
@@ -143,7 +181,8 @@ export function leadRef(l: Pick<Lead, "id">) {
 
 /** Which form the enquiry came from: a website page or a Meta lead form. */
 export function formName(l: Pick<Lead, "page" | "channel" | "meta">) {
-  if (l.channel === META_CHANNEL) return `Meta form${l.meta?.formName ? `: ${l.meta.formName}` : ""}`;
+  if (l.channel === META_CHANNEL)
+    return `Meta form${l.meta?.formName ? `: ${l.meta.formName}` : ""}`;
   const page = l.page;
   if (!page) return "Website";
   if (page.startsWith("/nanny-services-bangalore")) return "Google Ads page";
@@ -165,11 +204,15 @@ export function displayPhone(phone: string) {
 /** Where a lead came from, for the badge and the "Source" filter. */
 export type LeadOrigin = "google_ads" | "meta" | "website";
 
-export const ORIGIN_META: Record<LeadOrigin, { label: string; tone: string }> = {
-  google_ads: { label: "Google Ads", tone: "bg-[#e3edfd] text-[#1a56c4] ring-[#bcd2f7]" },
-  meta: { label: "Meta", tone: "bg-[#ece6fb] text-[#5b3cc4] ring-[#d3c6f5]" },
-  website: { label: "Website", tone: "bg-beige text-muted ring-line" },
-};
+export const ORIGIN_META: Record<LeadOrigin, { label: string; tone: string }> =
+  {
+    google_ads: {
+      label: "Google Ads",
+      tone: "bg-[#e3edfd] text-[#1a56c4] ring-[#bcd2f7]",
+    },
+    meta: { label: "Meta", tone: "bg-[#ece6fb] text-[#5b3cc4] ring-[#d3c6f5]" },
+    website: { label: "Website", tone: "bg-beige text-muted ring-line" },
+  };
 
 export const ORIGINS = Object.keys(ORIGIN_META) as LeadOrigin[];
 
@@ -177,9 +220,19 @@ export const ORIGINS = Object.keys(ORIGIN_META) as LeadOrigin[];
  * Meta lead forms, or anything tagged meta_*; Google Ads = the Ads landing page
  * (/nanny-services-bangalore) or a google_ads / gclid-style lead source; else the website.
  */
-export function leadOrigin(l: Pick<Lead, "channel" | "leadSource" | "page">): LeadOrigin {
+export function leadOrigin(
+  l: Pick<Lead, "channel" | "leadSource" | "page">,
+): LeadOrigin {
   const src = (l.leadSource ?? "").toLowerCase();
   if (l.channel === META_CHANNEL || src.startsWith("meta")) return "meta";
-  if (l.page?.startsWith("/nanny-services-bangalore") || /google|gads|adwords|gclid/.test(src)) return "google_ads";
+  if (
+    l.page?.startsWith("/nanny-services-bangalore") ||
+    /google|gads|adwords|gclid/.test(src)
+  )
+    return "google_ads";
   return "website";
 }
+
+/** Converted enquiry whose Servicing form hasn't been submitted yet. */
+export const formPending = (l: Pick<Lead, "status" | "ops">) =>
+  l.status === "converted" && !l.ops?.servicingFormAt;

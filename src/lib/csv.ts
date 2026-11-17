@@ -1,5 +1,14 @@
 import { formatDateTime, toDate } from "@/lib/format";
-import { CLOSE_REASONS, formName, leadOrigin, ORIGIN_META, leadRef, questionLabel, STATUS_META, type Lead } from "@/lib/types";
+import {
+  CLOSE_REASONS,
+  formName,
+  leadOrigin,
+  ORIGIN_META,
+  leadRef,
+  questionLabel,
+  STATUS_META,
+  type Lead,
+} from "@/lib/types";
 
 const COLUMNS: [string, (l: Lead) => string | number][] = [
   ["Reference", (l) => leadRef(l)],
@@ -19,16 +28,38 @@ const COLUMNS: [string, (l: Lead) => string | number][] = [
   ["Meta campaign", (l) => l.meta?.campaignName ?? ""],
   ["Meta ad set", (l) => l.meta?.adsetName ?? ""],
   ["Meta ad", (l) => l.meta?.adName ?? ""],
-  ["Meta form answers", (l) => (l.meta?.answers ?? []).map((a) => `${questionLabel(a.question)}: ${a.answer}`).join(" | ")],
+  [
+    "Meta form answers",
+    (l) =>
+      (l.meta?.answers ?? [])
+        .map((a) => `${questionLabel(a.question)}: ${a.answer}`)
+        .join(" | "),
+  ],
   ["Assigned to", (l) => l.ops?.assignedTo ?? ""],
-  ["Outcome", (l) => (l.status === "not_interested" && l.ops?.closeReason ? (CLOSE_REASONS[l.ops.closeReason.category]?.label ?? "") : "")],
-  ["Reason", (l) => (l.status === "not_interested" ? (l.ops?.closeReason?.reason ?? "") : "")],
-  ["Call back", (l) => (l.status === "contacted" ? formatDateTime(toDate(l.ops?.callbackAt)).replace("—", "") : "")],
+  [
+    "Outcome",
+    (l) =>
+      l.status === "not_interested" && l.ops?.closeReason
+        ? (CLOSE_REASONS[l.ops.closeReason.category]?.label ?? "")
+        : "",
+  ],
+  [
+    "Reason",
+    (l) =>
+      l.status === "not_interested" ? (l.ops?.closeReason?.reason ?? "") : "",
+  ],
+  [
+    "Call back",
+    (l) =>
+      l.status === "contacted"
+        ? formatDateTime(toDate(l.ops?.callbackAt)).replace("—", "")
+        : "",
+  ],
   ["Ops notes", (l) => l.ops?.notes ?? ""],
   ["Last updated by", (l) => l.ops?.updatedBy ?? ""],
 ];
 
-function cell(v: string | number) {
+export function cell(v: string | number) {
   const s = String(v);
   // Quote everything; also stop Excel from treating values like "+91…" or "=…" as formulas.
   const safe = /^[=+\-@]/.test(s) && typeof v === "string" ? `'${s}` : s;
@@ -37,10 +68,42 @@ function cell(v: string | number) {
 
 /** Downloads a CSV that opens directly in Excel / Google Sheets (UTF-8 with BOM). */
 export function downloadCsv(leads: Lead[], filename: string) {
-  const lines = [COLUMNS.map(([h]) => cell(h)).join(","), ...leads.map((l) => COLUMNS.map(([, f]) => cell(f(l))).join(","))];
-  const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const lines = [
+    COLUMNS.map(([h]) => cell(h)).join(","),
+    ...leads.map((l) => COLUMNS.map(([, f]) => cell(f(l))).join(",")),
+  ];
+  const blob = new Blob(["﻿" + lines.join("\r\n")], {
+    type: "text/csv;charset=utf-8",
+  });
   const url = URL.createObjectURL(blob);
-  const a = Object.assign(document.createElement("a"), { href: url, download: filename });
+  const a = Object.assign(document.createElement("a"), {
+    href: url,
+    download: filename,
+  });
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Any rows → CSV download (same Excel-friendly format as the enquiries export). */
+export function downloadRows<T>(
+  rows: T[],
+  columns: [string, (r: T) => string | number][],
+  filename: string,
+) {
+  const lines = [
+    columns.map(([h]) => cell(h)).join(","),
+    ...rows.map((r) => columns.map(([, f]) => cell(f(r))).join(",")),
+  ];
+  const blob = new Blob(["\uFEFF" + lines.join("\r\n")], {
+    type: "text/csv;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement("a"), {
+    href: url,
+    download: filename,
+  });
   document.body.appendChild(a);
   a.click();
   a.remove();

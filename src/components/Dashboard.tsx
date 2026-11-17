@@ -1,18 +1,26 @@
 "use client";
 
-import { Bell, Download, LogOut, PhoneCall, Search, X } from "lucide-react";
+import { Bell, Download, PhoneCall, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { AppHeader } from "@/components/AppHeader";
 import { LeadDetail } from "@/components/LeadDetail";
 import { LeadsTable } from "@/components/LeadsTable";
-import { Logo } from "@/components/Logo";
 import type { Staff } from "@/lib/auth";
-import { useAuth } from "@/lib/auth";
 import { downloadCsv } from "@/lib/csv";
 import { formatCallback, isSameDay, localISODate, toDate } from "@/lib/format";
 import { useLeads } from "@/lib/leads";
-import { useStaffList } from "@/lib/staff-list";
-import { careShort, displayPhone, leadOrigin, leadRef, ORIGIN_META, ORIGINS, type Lead, type LeadStatus } from "@/lib/types";
+import { enquiryStaff, useStaffList } from "@/lib/staff-list";
+import {
+  careShort,
+  displayPhone,
+  leadOrigin,
+  leadRef,
+  ORIGIN_META,
+  ORIGINS,
+  type Lead,
+  type LeadStatus,
+} from "@/lib/types";
 
 type Tab = LeadStatus | "all";
 type Range = "all" | "today" | "7d" | "30d";
@@ -33,9 +41,12 @@ const RANGES: { id: Range; label: string }[] = [
 ];
 
 export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
-  const { signOut } = useAuth();
-  const { leads, loading, error, arrivals, clearArrivals } = useLeads(true, demo);
-  const staffList = useStaffList(!!demo);
+  const { leads, loading, error, arrivals, clearArrivals } = useLeads(
+    true,
+    demo,
+  );
+  const allStaff = useStaffList(!!demo);
+  const staffList = useMemo(() => enquiryStaff(allStaff), [allStaff]);
 
   const [tab, setTab] = useState<Tab>("new");
   const [search, setSearch] = useState("");
@@ -74,13 +85,20 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
   // Tab title shows new enquiries and call backs that are due.
   const newCount = leads.filter((l) => l.status === "new").length;
   useEffect(() => {
-    const parts = [newCount && `${newCount} new`, dueCallbacks.length && `${dueCallbacks.length} call back${dueCallbacks.length === 1 ? "" : "s"}`].filter(Boolean);
-    document.title = parts.length ? `(${parts.join(", ")}) HeyNanny Ops` : "HeyNanny Ops";
+    const parts = [
+      newCount && `${newCount} new`,
+      dueCallbacks.length &&
+        `${dueCallbacks.length} call back${dueCallbacks.length === 1 ? "" : "s"}`,
+    ].filter(Boolean);
+    document.title = parts.length
+      ? `(${parts.join(", ")}) HeyNanny Ops`
+      : "HeyNanny Ops";
   }, [newCount, dueCallbacks.length]);
 
   // Pop up a reminder when a call back becomes due (for its assignee, or everyone if unassigned).
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
-  const reminderKey = (x: { lead: Lead; at: Date }) => `${x.lead.id}@${x.at.getTime()}`;
+  const reminderKey = (x: { lead: Lead; at: Date }) =>
+    `${x.lead.id}@${x.at.getTime()}`;
   const myDue = useMemo(
     () =>
       dueCallbacks.filter(({ lead }) => {
@@ -91,25 +109,42 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
   );
   const pendingReminders = myDue.filter((x) => !dismissed.has(reminderKey(x)));
   const reminder = pendingReminders[pendingReminders.length - 1] ?? null;
-  const dismissReminders = () => setDismissed((d) => new Set([...d, ...pendingReminders.map(reminderKey)]));
+  const dismissReminders = () =>
+    setDismissed((d) => new Set([...d, ...pendingReminders.map(reminderKey)]));
 
   // Desktop notification too, if the browser tab is in the background and alerts are allowed.
   const notified = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (typeof Notification === "undefined" || Notification.permission !== "granted" || !document.hidden) return;
+    if (
+      typeof Notification === "undefined" ||
+      Notification.permission !== "granted" ||
+      !document.hidden
+    )
+      return;
     for (const x of myDue) {
       const key = reminderKey(x);
       if (notified.current.has(key)) continue;
       notified.current.add(key);
-      new Notification("Call back due", { body: `${x.lead.name || displayPhone(x.lead.phone)} · ${careShort(x.lead.careType)}`, tag: key });
+      new Notification("Call back due", {
+        body: `${x.lead.name || displayPhone(x.lead.phone)} · ${careShort(x.lead.careType)}`,
+        tag: key,
+      });
     }
   }, [myDue]);
 
   const sources = useMemo(
-    () => [...new Set(leads.map((l) => l.leadSource).filter((s): s is string => !!s))].sort(),
+    () =>
+      [
+        ...new Set(
+          leads.map((l) => l.leadSource).filter((s): s is string => !!s),
+        ),
+      ].sort(),
     [leads],
   );
-  const careTypes = useMemo(() => [...new Set(leads.map((l) => l.careType).filter(Boolean))].sort(), [leads]);
+  const careTypes = useMemo(
+    () => [...new Set(leads.map((l) => l.careType).filter(Boolean))].sort(),
+    [leads],
+  );
 
   const stats = useMemo(() => {
     const today = leads.filter((l) => {
@@ -119,7 +154,9 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
     const monthKey = localISODate(now).slice(0, 7);
     const convertedThisMonth = leads.filter((l) => {
       const d = toDate(l.ops?.convertedAt) ?? toDate(l.updatedAt);
-      return l.status === "converted" && d && localISODate(d).startsWith(monthKey);
+      return (
+        l.status === "converted" && d && localISODate(d).startsWith(monthKey)
+      );
     });
     const monthLeads = leads.filter((l) => {
       const d = toDate(l.createdAt);
@@ -139,7 +176,13 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
     const q = search.trim().toLowerCase();
     const qDigits = q.replace(/\D/g, "");
     const minDate =
-      range === "all" ? null : new Date(now.getFullYear(), now.getMonth(), now.getDate() - (range === "today" ? 0 : range === "7d" ? 6 : 29));
+      range === "all"
+        ? null
+        : new Date(
+            now.getFullYear(),
+            now.getMonth(),
+            now.getDate() - (range === "today" ? 0 : range === "7d" ? 6 : 29),
+          );
     return leads.filter((l) => {
       if (care !== "all" && l.careType !== care) return false;
       if (source !== "all" && (l.leadSource ?? "") !== source) return false;
@@ -161,7 +204,13 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
   }, [leads, search, care, source, origin, range, now]);
 
   const tabCounts = useMemo(() => {
-    const counts: Record<Tab, number> = { new: 0, contacted: 0, converted: 0, not_interested: 0, all: filtered.length };
+    const counts: Record<Tab, number> = {
+      new: 0,
+      contacted: 0,
+      converted: 0,
+      not_interested: 0,
+      all: filtered.length,
+    };
     for (const l of filtered) counts[l.status] = (counts[l.status] ?? 0) + 1;
     return counts;
   }, [filtered]);
@@ -171,48 +220,43 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
     const list = filtered.filter((l) => l.status === tab);
     if (tab !== "contacted") return list;
     // Earliest call back first; leads without one keep their order at the end.
-    const t = (l: Lead) => toDate(l.ops?.callbackAt)?.getTime() ?? Number.POSITIVE_INFINITY;
+    const t = (l: Lead) =>
+      toDate(l.ops?.callbackAt)?.getTime() ?? Number.POSITIVE_INFINITY;
     return [...list].sort((a, b) => t(a) - t(b));
   }, [filtered, tab]);
   const selected = leads.find((l) => l.id === selectedId) ?? null;
-  const filtersOn = search || care !== "all" || source !== "all" || origin !== "all" || range !== "all";
+  const filtersOn =
+    search ||
+    care !== "all" ||
+    source !== "all" ||
+    origin !== "all" ||
+    range !== "all";
 
   return (
     <div className="min-h-dvh">
       {/* Header */}
-      <header className="sticky top-0 z-20 border-b border-line bg-milk/90 backdrop-blur-md">
-        <div className="mx-auto flex h-16 max-w-[1400px] items-center gap-3 px-4 sm:px-6">
-          <Logo className="h-10 w-auto" priority />
-          <span className="rounded-full bg-plum px-2.5 py-1 text-[0.68rem] font-bold uppercase tracking-wider text-milk">Ops</span>
-          <div className="ml-auto flex items-center gap-3">
-            <div className="hidden text-right sm:block">
-              <p className="text-sm font-semibold leading-tight text-plum">{staff.name}</p>
-              <p className="text-xs leading-tight text-muted">
-                {staff.email} · {staff.role}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={signOut}
-              className="inline-flex h-9 items-center gap-2 rounded-full bg-paper px-3.5 text-sm font-semibold text-plum ring-1 ring-line hover:bg-white"
-            >
-              <LogOut className="size-4" aria-hidden="true" />
-              <span className="hidden sm:inline">Sign out</span>
-            </button>
-          </div>
-        </div>
-      </header>
+      <AppHeader staff={staff} active="enquiries" />
 
       <main className="mx-auto max-w-[1400px] px-4 pb-16 pt-6 sm:px-6">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h1 className="font-display text-[1.9rem] leading-tight text-plum">Enquiries</h1>
-            <p className="mt-0.5 text-sm text-muted">Website, Google Ads and Meta lead forms. New enquiries appear here automatically.</p>
+            <h1 className="font-display text-[1.9rem] leading-tight text-plum">
+              Enquiries
+            </h1>
+            <p className="mt-0.5 text-sm text-muted">
+              Website, Google Ads and Meta lead forms. New enquiries appear here
+              automatically.
+            </p>
           </div>
           <button
             type="button"
             disabled={!visible.length}
-            onClick={() => downloadCsv(visible, `heynanny-enquiries-${localISODate(new Date())}.csv`)}
+            onClick={() =>
+              downloadCsv(
+                visible,
+                `heynanny-enquiries-${localISODate(new Date())}.csv`,
+              )
+            }
             className="inline-flex h-10 items-center gap-2 rounded-full bg-paper px-4 text-sm font-semibold text-plum ring-1 ring-line hover:bg-white disabled:opacity-50"
           >
             <Download className="size-4" aria-hidden="true" />
@@ -221,9 +265,26 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
         </div>
 
         {/* Summary */}
-        <section aria-label="Summary" className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <StatCard label="New enquiries" value={stats.newLeads} hint="Waiting for a call" accent onClick={() => setTab("new")} />
-          <StatCard label="Received today" value={stats.today} hint="All statuses" onClick={() => { setRange("today"); setTab("all"); }} />
+        <section
+          aria-label="Summary"
+          className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4"
+        >
+          <StatCard
+            label="New enquiries"
+            value={stats.newLeads}
+            hint="Waiting for a call"
+            accent
+            onClick={() => setTab("new")}
+          />
+          <StatCard
+            label="Received today"
+            value={stats.today}
+            hint="All statuses"
+            onClick={() => {
+              setRange("today");
+              setTab("all");
+            }}
+          />
           <StatCard
             label="Call backs due"
             value={dueCallbacks.length}
@@ -240,11 +301,17 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
         </section>
 
         {/* Toolbar */}
-        <section aria-label="Filters" className="mt-6 rounded-[20px] border border-line bg-paper p-3 shadow-soft">
+        <section
+          aria-label="Filters"
+          className="mt-6 rounded-[20px] border border-line bg-paper p-3 shadow-soft"
+        >
           <div className="flex flex-wrap items-center gap-2">
             <label className="relative min-w-[220px] flex-1">
               <span className="sr-only">Search</span>
-              <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted" aria-hidden="true" />
+              <Search
+                className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted"
+                aria-hidden="true"
+              />
               <input
                 type="search"
                 value={search}
@@ -253,10 +320,41 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
                 className="h-10 w-full rounded-full border border-line bg-white pl-10 pr-4 text-sm text-plum placeholder:text-muted/80 focus:border-plum focus:outline-none"
               />
             </label>
-            <Select label="Type of care" value={care} onChange={setCare} options={[["all", "All care types"], ...careTypes.map((c) => [c, careShort(c)] as [string, string])]} />
-            <Select label="Source" value={origin} onChange={setOrigin} options={[["all", "All channels"], ...ORIGINS.map((o) => [o, ORIGIN_META[o].label] as [string, string])]} />
-            <Select label="Lead source" value={source} onChange={setSource} options={[["all", "All sources"], ...sources.map((s) => [s, s] as [string, string])]} />
-            <Select label="Received" value={range} onChange={(v) => setRange(v as Range)} options={RANGES.map((r) => [r.id, r.label] as [string, string])} />
+            <Select
+              label="Type of care"
+              value={care}
+              onChange={setCare}
+              options={[
+                ["all", "All care types"],
+                ...careTypes.map((c) => [c, careShort(c)] as [string, string]),
+              ]}
+            />
+            <Select
+              label="Source"
+              value={origin}
+              onChange={setOrigin}
+              options={[
+                ["all", "All channels"],
+                ...ORIGINS.map(
+                  (o) => [o, ORIGIN_META[o].label] as [string, string],
+                ),
+              ]}
+            />
+            <Select
+              label="Lead source"
+              value={source}
+              onChange={setSource}
+              options={[
+                ["all", "All sources"],
+                ...sources.map((s) => [s, s] as [string, string]),
+              ]}
+            />
+            <Select
+              label="Received"
+              value={range}
+              onChange={(v) => setRange(v as Range)}
+              options={RANGES.map((r) => [r.id, r.label] as [string, string])}
+            />
             {filtersOn && (
               <button
                 type="button"
@@ -275,7 +373,11 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
             )}
           </div>
 
-          <div role="tablist" aria-label="Status" className="mt-3 flex gap-1 overflow-x-auto border-t border-line pt-3">
+          <div
+            role="tablist"
+            aria-label="Status"
+            className="mt-3 flex flex-wrap gap-1 border-t border-line pt-3"
+          >
             {TABS.map((t) => {
               const active = tab === t.id;
               return (
@@ -292,7 +394,11 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
                   {t.label}
                   <span
                     className={`min-w-6 rounded-full px-1.5 py-0.5 text-xs tabular-nums ${
-                      active ? "bg-milk/20 text-milk" : t.id === "new" && tabCounts.new ? "bg-rose text-white" : "bg-beige text-muted"
+                      active
+                        ? "bg-milk/20 text-milk"
+                        : t.id === "new" && tabCounts.new
+                          ? "bg-rose text-white"
+                          : "bg-beige text-muted"
                     }`}
                   >
                     {tabCounts[t.id]}
@@ -306,23 +412,48 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
         {/* Table */}
         <section aria-label="Enquiries" className="mt-4">
           {error ? (
-            <p role="alert" className="rounded-[20px] bg-red-50 px-4 py-3 text-sm text-red-700">
+            <p
+              role="alert"
+              className="rounded-[20px] bg-red-50 px-4 py-3 text-sm text-red-700"
+            >
               {error}
             </p>
           ) : loading ? (
-            <div className="rounded-[20px] border border-line bg-paper px-4 py-16 text-center text-sm text-muted">Loading enquiries…</div>
+            <div className="rounded-[20px] border border-line bg-paper px-4 py-16 text-center text-sm text-muted">
+              Loading enquiries…
+            </div>
           ) : (
-            <LeadsTable leads={visible} now={now} selectedId={selectedId} onSelect={setSelectedId} emptyHint={tabEmptyHint(tab, !!filtersOn)} staffList={staffList} />
+            <LeadsTable
+              leads={visible}
+              now={now}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              emptyHint={tabEmptyHint(tab, !!filtersOn)}
+              staffList={staffList}
+            />
           )}
         </section>
       </main>
 
-      {selected && <LeadDetail lead={selected} staff={staff} staffList={staffList} demo={!!demo} onClose={() => setSelectedId(null)} />}
+      {selected && (
+        <LeadDetail
+          lead={selected}
+          staff={staff}
+          staffList={staffList}
+          demo={!!demo}
+          onClose={() => setSelectedId(null)}
+        />
+      )}
 
       {/* Call back reminder */}
       {reminder && (
-        <div className={`toast-in fixed left-1/2 z-40 w-[min(420px,calc(100vw-2rem))] -translate-x-1/2 ${arrivals.length ? "bottom-24" : "bottom-5"}`}>
-          <div className="flex items-center gap-3 rounded-[18px] bg-[#7a5410] px-4 py-3 text-white shadow-lift" role="status">
+        <div
+          className={`toast-in fixed left-1/2 z-40 w-[min(420px,calc(100vw-2rem))] -translate-x-1/2 ${arrivals.length ? "bottom-24" : "bottom-5"}`}
+        >
+          <div
+            className="flex items-center gap-3 rounded-[18px] bg-[#7a5410] px-4 py-3 text-white shadow-lift"
+            role="status"
+          >
             <span className="grid size-9 shrink-0 place-items-center rounded-full bg-white/15">
               <PhoneCall className="size-4" aria-hidden="true" />
             </span>
@@ -335,12 +466,23 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
                 dismissReminders();
               }}
             >
-              <p className="text-sm font-bold">Call back due{pendingReminders.length > 1 ? ` (${pendingReminders.length})` : ""}</p>
+              <p className="text-sm font-bold">
+                Call back due
+                {pendingReminders.length > 1
+                  ? ` (${pendingReminders.length})`
+                  : ""}
+              </p>
               <p className="truncate text-xs text-white/85">
-                {reminder.lead.name || displayPhone(reminder.lead.phone)} · {formatCallback(reminder.at, now)} · tap to open
+                {reminder.lead.name || displayPhone(reminder.lead.phone)} ·{" "}
+                {formatCallback(reminder.at, now)} · tap to open
               </p>
             </button>
-            <button type="button" onClick={dismissReminders} aria-label="Dismiss" className="grid size-8 place-items-center rounded-full hover:bg-white/10">
+            <button
+              type="button"
+              onClick={dismissReminders}
+              aria-label="Dismiss"
+              className="grid size-8 place-items-center rounded-full hover:bg-white/10"
+            >
               <X className="size-4" aria-hidden="true" />
             </button>
           </div>
@@ -350,7 +492,10 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
       {/* New enquiry toast */}
       {arrivals.length > 0 && (
         <div className="toast-in fixed bottom-5 left-1/2 z-40 w-[min(420px,calc(100vw-2rem))] -translate-x-1/2">
-          <div className="flex items-center gap-3 rounded-[18px] bg-plum px-4 py-3 text-milk shadow-lift" role="status">
+          <div
+            className="flex items-center gap-3 rounded-[18px] bg-plum px-4 py-3 text-milk shadow-lift"
+            role="status"
+          >
             <span className="grid size-9 shrink-0 place-items-center rounded-full bg-rose/30">
               <Bell className="size-4" aria-hidden="true" />
             </span>
@@ -364,13 +509,22 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
               }}
             >
               <p className="text-sm font-bold">
-                {arrivals.length === 1 ? "New enquiry" : `${arrivals.length} new enquiries`}
+                {arrivals.length === 1
+                  ? "New enquiry"
+                  : `${arrivals.length} new enquiries`}
               </p>
               <p className="truncate text-xs text-blush/90">
-                {arrivals[0]!.name ? `${arrivals[0]!.name} · ` : ""}{careShort(arrivals[0]!.careType)} · {arrivals[0]!.area} · tap to open
+                {arrivals[0]!.name ? `${arrivals[0]!.name} · ` : ""}
+                {careShort(arrivals[0]!.careType)} · {arrivals[0]!.area} · tap
+                to open
               </p>
             </button>
-            <button type="button" onClick={clearArrivals} aria-label="Dismiss" className="grid size-8 place-items-center rounded-full hover:bg-white/10">
+            <button
+              type="button"
+              onClick={clearArrivals}
+              aria-label="Dismiss"
+              className="grid size-8 place-items-center rounded-full hover:bg-white/10"
+            >
               <X className="size-4" aria-hidden="true" />
             </button>
           </div>
@@ -408,12 +562,26 @@ function StatCard({
       type="button"
       onClick={onClick}
       className={`rounded-[20px] p-4 text-left transition-[transform,box-shadow] duration-200 hover:-translate-y-[2px] hover:shadow-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-plum ${
-        accent ? "bg-plum text-milk" : alert ? "border border-red-300 bg-red-50 text-red-800" : "border border-line bg-paper text-plum"
+        accent
+          ? "bg-plum text-milk"
+          : alert
+            ? "border border-red-300 bg-red-50 text-red-800"
+            : "border border-line bg-paper text-plum"
       }`}
     >
-      <p className={`text-xs font-semibold uppercase tracking-wider ${accent ? "text-blush" : "text-muted"}`}>{label}</p>
-      <p className="mt-1 font-display text-[2.1rem] leading-none tabular-nums">{value}</p>
-      <p className={`mt-2 truncate text-xs ${accent ? "text-blush/90" : "text-muted"}`}>{hint}</p>
+      <p
+        className={`text-xs font-semibold uppercase tracking-wider ${accent ? "text-blush" : "text-muted"}`}
+      >
+        {label}
+      </p>
+      <p className="mt-1 font-display text-[2.1rem] leading-none tabular-nums">
+        {value}
+      </p>
+      <p
+        className={`mt-2 truncate text-xs ${accent ? "text-blush/90" : "text-muted"}`}
+      >
+        {hint}
+      </p>
     </button>
   );
 }
