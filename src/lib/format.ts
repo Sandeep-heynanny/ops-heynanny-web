@@ -64,3 +64,41 @@ export function isSameDay(a: Date, b: Date) {
 export function localISODate(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
+
+/** Date → value for <input type="datetime-local"> in local time ("2026-11-18T10:00"). */
+export function toLocalInput(d: Date | null): string {
+  if (!d) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** <input type="datetime-local"> value → Date (local time), or null. */
+export function fromLocalInput(v: string): Date | null {
+  if (!v) return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+export type CallbackState = "overdue" | "today" | "later";
+
+export function callbackState(d: Date, now = new Date()): CallbackState {
+  if (d <= now) return "overdue";
+  return isSameDay(d, now) ? "today" : "later";
+}
+
+/** "Today, 4 PM" / "Tomorrow, 10 AM" / "18 Nov, 10 AM" (with "Overdue · " when past). */
+export function formatCallback(d: Date, now = new Date()): string {
+  const time = d.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" }).toUpperCase().replace(":00 ", " ");
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const day = isSameDay(d, now)
+    ? "Today"
+    : isSameDay(d, tomorrow)
+      ? "Tomorrow"
+      : isSameDay(d, yesterday)
+        ? "Yesterday"
+        : `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  return `${d <= now ? "Overdue · " : ""}${day}, ${time}`;
+}

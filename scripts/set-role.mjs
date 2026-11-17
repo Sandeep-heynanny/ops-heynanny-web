@@ -6,6 +6,10 @@
  *   npm run role -- sandeep@heynanny.in admin  # same, plus admin-only actions
  *   npm run role -- priya@heynanny.in none     # remove access (signs them out)
  *   npm run role -- --list                     # who has access
+ *   npm run role -- --sync                     # rebuild the "Assigned to" staff list from current roles
+ *
+ * Each role change also updates Firestore `staff/{uid}` ({ email, name, role }),
+ * which fills the "Assigned to" dropdown on the dashboard.
  *
  * The person must have signed in to the dashboard once first, so their
  * account exists. Credentials: run `gcloud auth application-default login` and
@@ -18,6 +22,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { applicationDefault, cert, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
+import { FieldValue, getFirestore } from "firebase-admin/firestore";
 
 const PROJECT_ID = "hey-nanny-web";
 const DOMAIN = "@heynanny.in";
@@ -44,6 +49,38 @@ initializeApp({
   credential: hasKey ? cert(JSON.parse(readFileSync(keyPath, "utf8"))) : applicationDefault(),
 });
 const auth = getAuth();
+const db = getFirestore();
+
+/** The dashboard's staff list (Firestore `staff/{uid}`); only this script writes it. */
+async function writeStaff(user, role) {
+  const ref = db.collection("staff").doc(user.uid);
+  if (role === "none") return ref.delete();
+  await ref.set({
+    email: user.email.toLowerCase(),
+    name: user.displayName || user.email.split("@")[0],
+    role,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+}
+
+async function sync() {
+  const keep = new Set();
+  let token;
+  do {
+    const page = await auth.listUsers(1000, token);
+    for (const u of page.users) {
+      const role = u.customClaims?.role;
+      if (u.email?.toLowerCase().endsWith(DOMAIN) && (role === "ops" || role === "admin")) {
+        await writeStaff(u, role);
+        keep.add(u.uid);
+      }
+    }
+    token = page.pageToken;
+  } while (token);
+  const existing = await db.collection("staff").get();
+  for (const d of existing.docs) if (!keep.has(d.id)) await d.ref.delete();
+  console.log(`Staff list updated: ${keep.size} ${keep.size === 1 ? "person" : "people"}.`);
+}
 
 const [arg1, arg2] = process.argv.slice(2);
 
@@ -74,6 +111,7 @@ async function setRole(email, role) {
   if (role === "none") delete claims.role;
   else claims.role = role;
   await auth.setCustomUserClaims(user.uid, claims);
+  await writeStaff(user, role);
   if (role === "none") {
     await auth.revokeRefreshTokens(user.uid);
     console.log(`Removed access for ${email}. They lose access within an hour (immediately if they sign out).`);
@@ -84,9 +122,10 @@ async function setRole(email, role) {
 
 try {
   if (arg1 === "--list") await list();
+  else if (arg1 === "--sync") await sync();
   else if (arg1 && arg2) await setRole(arg1.trim(), arg2.trim());
   else {
-    console.log("Usage: npm run role -- <email@heynanny.in> <ops|admin|none>   |   npm run role -- --list");
+    console.log("Usage: npm run role -- <email@heynanny.in> <ops|admin|none>   |   npm run role -- --list   |   npm run role -- --sync");
     process.exitCode = 1;
   }
 } catch (err) {

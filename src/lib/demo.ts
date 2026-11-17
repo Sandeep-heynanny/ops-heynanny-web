@@ -1,7 +1,7 @@
 import { Timestamp } from "firebase/firestore";
 
 import type { Staff } from "@/lib/auth";
-import type { Booking, BookingStatus } from "@/lib/types";
+import type { Lead, LeadStatus } from "@/lib/types";
 
 /**
  * Sample data for previewing the UI without signing in.
@@ -9,48 +9,95 @@ import type { Booking, BookingStatus } from "@/lib/types";
  */
 export const DEMO_STAFF: Staff = { uid: "demo", email: "priya@heynanny.in", name: "Priya Sharma", photo: null, role: "ops" };
 
-const rows: [string, string, string, string, string, number, string, string, BookingStatus, string | null, string?][] = [
-  // name, phone, service, plan, care, minutesAgo, city, pincode, status, lead, assigned
-  ["Ananya Rao", "+919845012345", "baby-care", "together", "day", 6, "Bengaluru", "560102", "pending", "instagram"],
-  ["Rahul Menon", "+919900112233", "japa", "comfort", "", 48, "Bengaluru", "560034", "pending", "whatsapp_hsr"],
-  ["Sneha Kulkarni", "+919731234567", "baby-care", "family", "live-in", 190, "Bengaluru", "560066", "pending", null],
-  ["Vikram Iyer", "+918147001122", "baby-care", "hello", "day", 60 * 20, "Bengaluru", "560076", "contacted", "google", "priya@heynanny.in"],
-  ["Meera Nair", "+919886554433", "japa", "complete", "", 60 * 28, "Bengaluru", "560037", "contacted", "instagram", "arjun@heynanny.in"],
-  ["Karthik Reddy", "+917019887766", "baby-care", "forever", "live-in", 60 * 52, "Bengaluru", "560103", "confirmed", "referral", "priya@heynanny.in"],
-  ["Divya Shetty", "+919620443322", "baby-care", "together", "day", 60 * 75, "Bengaluru", "560038", "confirmed", null, "arjun@heynanny.in"],
-  ["Aditya Joshi", "+919535667788", "japa", "comfort", "", 60 * 100, "Bengaluru", "560068", "cancelled", "instagram", "priya@heynanny.in"],
-  ["Pooja Hegde", "+918884223311", "baby-care", "hello", "day", 60 * 130, "Bengaluru", "560095", "confirmed", "whatsapp_hsr", "priya@heynanny.in"],
+const JAPA = "Japa Care (newborn) - 24 hrs live-in";
+const LIVE = "Live-In Nanny - baby 2 months+";
+const DAY = "Day Nanny - baby 3 months+";
+const FLEXI = "Flexi Care (one day)";
+
+const NAMES = ["Ananya Rao", "Rahul Menon", "Sneha Kulkarni", "Vikram Iyer", "Meera Nair", "Karthik Reddy", "Divya Shetty", null];
+
+const rows: [string, string | null, string, string, string, number, string, LeadStatus, string | null, string?][] = [
+  // phone, email, care, when, area, minutesAgo, page, status, lead, assigned
+  ["9845012345", "ananya.rao@example.com", DAY, "Not specified", "HSR Layout", 4, "/nanny-services-bangalore", "new", "google_ads"],
+  ["9900112233", null, JAPA, "Immediately", "Koramangala", 38, "/", "new", "instagram"],
+  ["9731234567", "sneha.k@example.com", LIVE, "Within 2 weeks", "Whitefield", 150, "/nanny-services-bangalore", "new", "google_ads"],
+  ["8147001122", null, FLEXI, "Immediately", "Bellandur", 60 * 20, "/", "contacted", null, "priya@heynanny.in"],
+  ["9886554433", "meera.nair@example.com", JAPA, "Within a month", "Indiranagar", 60 * 28, "/nanny-services-bangalore", "contacted", "google_ads", "arjun@heynanny.in"],
+  ["7019887766", null, LIVE, "Immediately", "Sarjapur Road", 60 * 52, "/", "converted", "referral", "priya@heynanny.in"],
+  ["9620443322", "divya.s@example.com", DAY, "Not specified", "JP Nagar", 60 * 75, "/nanny-services-bangalore", "converted", "google_ads", "arjun@heynanny.in"],
+  ["9535667788", null, DAY, "Just exploring", "Electronic City", 60 * 100, "/", "not_interested", "instagram", "priya@heynanny.in"],
 ];
 
-const PRICES: Record<string, number> = { hello: 7999, together: 9999, family: 15999, forever: 29999, comfort: 16999, complete: 24999 };
+/** One lead from a Meta (Instagram) lead form, as the `leads` Cloud Functions save it. */
+function demoMetaLead(now: Date): Lead {
+  const created = Timestamp.fromDate(new Date(now.getTime() - 12 * 60_000));
+  return {
+    id: "meta_1234567890123456",
+    userId: "meta",
+    channel: "meta_lead_ad",
+    status: "new",
+    name: "Kavya Hegde",
+    careType: "Live-in nanny",
+    when: "Within 2 weeks",
+    area: "Sobha Daffodil, HSR Layout, Bengaluru",
+    phone: "9741122334",
+    email: "kavya.h@example.com",
+    leadSource: "meta_instagram",
+    page: null,
+    createdAt: created,
+    meta: {
+      leadId: "1234567890123456",
+      formName: "Nanny enquiry – Nov",
+      campaignName: "Bengaluru leads – Nov",
+      adsetName: "HSR + Koramangala, parents 25–40",
+      adName: "Trained live-in nannies (video)",
+      platform: "ig",
+      isOrganic: false,
+      answers: [
+        { question: "full_name", answer: "Kavya Hegde" },
+        { question: "phone_number", answer: "+919741122334" },
+        { question: "email", answer: "kavya.h@example.com" },
+        { question: "what_type_of_care_do_you_need?", answer: "Live-in nanny" },
+        { question: "when_do_you_need_a_nanny?", answer: "Within 2 weeks" },
+        { question: "your_apartment_/_area", answer: "Sobha Daffodil, HSR Layout" },
+      ],
+    },
+  };
+}
 
-export function demoBookings(now = new Date()): Booking[] {
-  return rows.map(([name, phone, serviceId, planId, care, minsAgo, city, pincode, status, lead, assigned], i) => {
-    const created = new Date(now.getTime() - minsAgo * 60_000);
-    const start = new Date(created.getTime() + (3 + i) * 86_400_000);
-    const price = PRICES[planId]!;
-    const gst = Math.round(price * 0.18 * 100) / 100;
+export function demoLeads(now = new Date()): Lead[] {
+  return [demoMetaLead(now), ...rows.map(([phone, email, careType, when, area, minsAgo, page, status, lead, assigned], i) => {
+    const created = Timestamp.fromDate(new Date(now.getTime() - minsAgo * 60_000));
     return {
       id: `d${i}x7k2pq9w${i}`,
       userId: `anon-${i}`,
-      customer: { name, phone, email: `${name.split(" ")[0]!.toLowerCase()}@example.com` },
-      serviceId,
-      planId,
-      nannyId: null,
-      leadSource: lead,
-      bookingDetails: {
-        date: start.toISOString().slice(0, 10),
-        startTime: i % 2 ? "09:00" : "08:30",
-        careType: care || null,
-        children: serviceId === "japa" ? [{ ageGroup: "0-6m" }] : i % 3 === 0 ? [{ ageGroup: "6m-2y" }, { ageGroup: "2y+" }] : [{ ageGroup: "6m-2y" }],
-        address: { line1: `${12 + i * 7}, ${["4th Cross", "Main Road", "2nd Block", "Lake View"][i % 4]}`, city, pincode },
-        notes: i === 0 ? "Prefer a Kannada-speaking nanny. Please call after 6 PM." : null,
-      },
-      pricing: { subtotal: price, taxes: gst, discount: 0, totalAmount: price + gst, currency: "INR" },
+      channel: "whatsapp_form",
       status,
-      createdAt: Timestamp.fromDate(created),
-      updatedAt: Timestamp.fromDate(created),
-      ops: assigned ? { assignedTo: assigned, updatedBy: assigned, notes: status === "cancelled" ? "Found a relative to help. Follow up in 3 months." : undefined } : undefined,
+      name: NAMES[i] ?? null,
+      careType,
+      when,
+      area,
+      phone,
+      email,
+      leadSource: lead,
+      page,
+      createdAt: created,
+      updatedAt: created,
+      ops: assigned
+        ? {
+            assignedTo: assigned,
+            updatedBy: assigned,
+            notes: status === "not_interested" ? "Only exploring for now. Follow up in 2 months." : undefined,
+            closeReason: status === "not_interested" ? { category: "lost" as const, reason: "Postponed the decision of buying product/service" } : undefined,
+            // Contacted samples: one call back overdue by 20 min, one tomorrow 10 AM.
+            callbackAt:
+              status === "contacted"
+                ? Timestamp.fromDate(
+                    i === 3 ? new Date(now.getTime() - 20 * 60_000) : new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 10),
+                  )
+                : undefined,
+          }
+        : undefined,
     };
-  });
+  })];
 }

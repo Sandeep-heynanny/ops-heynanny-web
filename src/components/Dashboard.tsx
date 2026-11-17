@@ -1,27 +1,27 @@
 "use client";
 
-import { Bell, Download, LogOut, Search, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Bell, Download, LogOut, PhoneCall, Search, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { BookingDetail } from "@/components/BookingDetail";
-import { BookingsTable } from "@/components/BookingsTable";
+import { LeadDetail } from "@/components/LeadDetail";
+import { LeadsTable } from "@/components/LeadsTable";
 import { Logo } from "@/components/Logo";
 import type { Staff } from "@/lib/auth";
 import { useAuth } from "@/lib/auth";
-import { useBookings } from "@/lib/bookings";
-import { SERVICES } from "@/lib/catalog";
 import { downloadCsv } from "@/lib/csv";
-import { formatINR, isSameDay, localISODate, toDate } from "@/lib/format";
-import { requestId, type Booking, type BookingStatus } from "@/lib/types";
+import { formatCallback, isSameDay, localISODate, toDate } from "@/lib/format";
+import { useLeads } from "@/lib/leads";
+import { useStaffList } from "@/lib/staff-list";
+import { careShort, displayPhone, leadOrigin, leadRef, ORIGIN_META, ORIGINS, type Lead, type LeadStatus } from "@/lib/types";
 
-type Tab = BookingStatus | "all";
+type Tab = LeadStatus | "all";
 type Range = "all" | "today" | "7d" | "30d";
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: "pending", label: "New" },
+  { id: "new", label: "New" },
   { id: "contacted", label: "Contacted" },
-  { id: "confirmed", label: "Confirmed" },
-  { id: "cancelled", label: "Cancelled" },
+  { id: "converted", label: "Converted" },
+  { id: "not_interested", label: "Not interested" },
   { id: "all", label: "All" },
 ];
 
@@ -32,14 +32,16 @@ const RANGES: { id: Range; label: string }[] = [
   { id: "30d", label: "Last 30 days" },
 ];
 
-export function Dashboard({ staff, demo }: { staff: Staff; demo?: Booking[] }) {
+export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
   const { signOut } = useAuth();
-  const { bookings, loading, error, arrivals, clearArrivals } = useBookings(true, demo);
+  const { leads, loading, error, arrivals, clearArrivals } = useLeads(true, demo);
+  const staffList = useStaffList(!!demo);
 
-  const [tab, setTab] = useState<Tab>("pending");
+  const [tab, setTab] = useState<Tab>("new");
   const [search, setSearch] = useState("");
-  const [service, setService] = useState("all");
+  const [care, setCare] = useState("all");
   const [source, setSource] = useState("all");
+  const [origin, setOrigin] = useState("all");
   const [range, setRange] = useState<Range>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [now, setNow] = useState(() => new Date());
@@ -50,35 +52,87 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Booking[] }) {
     return () => window.clearInterval(t);
   }, []);
 
-  // Tab title shows how many new requests are waiting.
-  const newCount = bookings.filter((b) => b.status === "pending").length;
-  useEffect(() => {
-    document.title = newCount ? `(${newCount}) New requests · HeyNanny Ops` : "HeyNanny Ops";
-  }, [newCount]);
-
-  const sources = useMemo(
-    () => [...new Set(bookings.map((b) => b.leadSource).filter((s): s is string => !!s))].sort(),
-    [bookings],
+  // Contacted leads whose call-back time has come, oldest first.
+  const dueCallbacks = useMemo(
+    () =>
+      leads
+        .filter((l) => l.status === "contacted")
+        .map((l) => ({ lead: l, at: toDate(l.ops?.callbackAt) }))
+        .filter((x): x is { lead: Lead; at: Date } => !!x.at && x.at <= now)
+        .sort((a, b) => a.at.getTime() - b.at.getTime()),
+    [leads, now],
+  );
+  const callbacksToday = useMemo(
+    () =>
+      leads.filter((l) => {
+        const d = l.status === "contacted" ? toDate(l.ops?.callbackAt) : null;
+        return d && d > now && isSameDay(d, now);
+      }).length,
+    [leads, now],
   );
 
+  // Tab title shows new enquiries and call backs that are due.
+  const newCount = leads.filter((l) => l.status === "new").length;
+  useEffect(() => {
+    const parts = [newCount && `${newCount} new`, dueCallbacks.length && `${dueCallbacks.length} call back${dueCallbacks.length === 1 ? "" : "s"}`].filter(Boolean);
+    document.title = parts.length ? `(${parts.join(", ")}) HeyNanny Ops` : "HeyNanny Ops";
+  }, [newCount, dueCallbacks.length]);
+
+  // Pop up a reminder when a call back becomes due (for its assignee, or everyone if unassigned).
+  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
+  const reminderKey = (x: { lead: Lead; at: Date }) => `${x.lead.id}@${x.at.getTime()}`;
+  const myDue = useMemo(
+    () =>
+      dueCallbacks.filter(({ lead }) => {
+        const owner = lead.ops?.assignedTo?.toLowerCase();
+        return !owner || owner === staff.email.toLowerCase();
+      }),
+    [dueCallbacks, staff.email],
+  );
+  const pendingReminders = myDue.filter((x) => !dismissed.has(reminderKey(x)));
+  const reminder = pendingReminders[pendingReminders.length - 1] ?? null;
+  const dismissReminders = () => setDismissed((d) => new Set([...d, ...pendingReminders.map(reminderKey)]));
+
+  // Desktop notification too, if the browser tab is in the background and alerts are allowed.
+  const notified = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (typeof Notification === "undefined" || Notification.permission !== "granted" || !document.hidden) return;
+    for (const x of myDue) {
+      const key = reminderKey(x);
+      if (notified.current.has(key)) continue;
+      notified.current.add(key);
+      new Notification("Call back due", { body: `${x.lead.name || displayPhone(x.lead.phone)} · ${careShort(x.lead.careType)}`, tag: key });
+    }
+  }, [myDue]);
+
+  const sources = useMemo(
+    () => [...new Set(leads.map((l) => l.leadSource).filter((s): s is string => !!s))].sort(),
+    [leads],
+  );
+  const careTypes = useMemo(() => [...new Set(leads.map((l) => l.careType).filter(Boolean))].sort(), [leads]);
+
   const stats = useMemo(() => {
-    const today = bookings.filter((b) => {
-      const d = toDate(b.createdAt);
+    const today = leads.filter((l) => {
+      const d = toDate(l.createdAt);
       return !d || isSameDay(d, now);
     });
     const monthKey = localISODate(now).slice(0, 7);
-    const confirmedThisMonth = bookings.filter((b) => {
-      const d = toDate(b.ops?.confirmedAt) ?? toDate(b.updatedAt);
-      return b.status === "confirmed" && d && localISODate(d).startsWith(monthKey);
+    const convertedThisMonth = leads.filter((l) => {
+      const d = toDate(l.ops?.convertedAt) ?? toDate(l.updatedAt);
+      return l.status === "converted" && d && localISODate(d).startsWith(monthKey);
+    });
+    const monthLeads = leads.filter((l) => {
+      const d = toDate(l.createdAt);
+      return d && localISODate(d).startsWith(monthKey);
     });
     return {
-      newRequests: newCount,
+      newLeads: newCount,
       today: today.length,
-      contacted: bookings.filter((b) => b.status === "contacted").length,
-      confirmedMonth: confirmedThisMonth.length,
-      confirmedValue: confirmedThisMonth.reduce((s, b) => s + b.pricing.subtotal, 0),
+      contacted: leads.filter((l) => l.status === "contacted").length,
+      convertedMonth: convertedThisMonth.length,
+      monthLeads: monthLeads.length,
     };
-  }, [bookings, newCount, now]);
+  }, [leads, newCount, now]);
 
   // Everything except the status tab, so tab counts reflect the other filters.
   const filtered = useMemo(() => {
@@ -86,34 +140,42 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Booking[] }) {
     const qDigits = q.replace(/\D/g, "");
     const minDate =
       range === "all" ? null : new Date(now.getFullYear(), now.getMonth(), now.getDate() - (range === "today" ? 0 : range === "7d" ? 6 : 29));
-    return bookings.filter((b) => {
-      if (service !== "all" && b.serviceId !== service) return false;
-      if (source !== "all" && (b.leadSource ?? "") !== source) return false;
+    return leads.filter((l) => {
+      if (care !== "all" && l.careType !== care) return false;
+      if (source !== "all" && (l.leadSource ?? "") !== source) return false;
+      if (origin !== "all" && leadOrigin(l) !== origin) return false;
       if (minDate) {
-        const d = toDate(b.createdAt);
+        const d = toDate(l.createdAt);
         if (d && d < minDate) return false;
       }
       if (!q) return true;
       return (
-        b.customer.name.toLowerCase().includes(q) ||
-        b.customer.email.toLowerCase().includes(q) ||
-        (qDigits.length >= 3 && b.customer.phone.replace(/\D/g, "").includes(qDigits)) ||
-        requestId(b).toLowerCase().includes(q) ||
-        b.bookingDetails.address.pincode.includes(q) ||
-        b.bookingDetails.address.city.toLowerCase().includes(q)
+        (l.name ?? "").toLowerCase().includes(q) ||
+        (l.email ?? "").toLowerCase().includes(q) ||
+        (qDigits.length >= 3 && l.phone.replace(/\D/g, "").includes(qDigits)) ||
+        leadRef(l).toLowerCase().includes(q) ||
+        l.area.toLowerCase().includes(q) ||
+        (l.ops?.notes ?? "").toLowerCase().includes(q)
       );
     });
-  }, [bookings, search, service, source, range, now]);
+  }, [leads, search, care, source, origin, range, now]);
 
   const tabCounts = useMemo(() => {
-    const counts: Record<Tab, number> = { pending: 0, contacted: 0, confirmed: 0, cancelled: 0, completed: 0, all: filtered.length };
-    for (const b of filtered) counts[b.status] = (counts[b.status] ?? 0) + 1;
+    const counts: Record<Tab, number> = { new: 0, contacted: 0, converted: 0, not_interested: 0, all: filtered.length };
+    for (const l of filtered) counts[l.status] = (counts[l.status] ?? 0) + 1;
     return counts;
   }, [filtered]);
 
-  const visible = useMemo(() => (tab === "all" ? filtered : filtered.filter((b) => b.status === tab)), [filtered, tab]);
-  const selected = bookings.find((b) => b.id === selectedId) ?? null;
-  const filtersOn = search || service !== "all" || source !== "all" || range !== "all";
+  const visible = useMemo(() => {
+    if (tab === "all") return filtered;
+    const list = filtered.filter((l) => l.status === tab);
+    if (tab !== "contacted") return list;
+    // Earliest call back first; leads without one keep their order at the end.
+    const t = (l: Lead) => toDate(l.ops?.callbackAt)?.getTime() ?? Number.POSITIVE_INFINITY;
+    return [...list].sort((a, b) => t(a) - t(b));
+  }, [filtered, tab]);
+  const selected = leads.find((l) => l.id === selectedId) ?? null;
+  const filtersOn = search || care !== "all" || source !== "all" || origin !== "all" || range !== "all";
 
   return (
     <div className="min-h-dvh">
@@ -144,13 +206,13 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Booking[] }) {
       <main className="mx-auto max-w-[1400px] px-4 pb-16 pt-6 sm:px-6">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h1 className="font-display text-[1.9rem] leading-tight text-plum">Booking requests</h1>
-            <p className="mt-0.5 text-sm text-muted">Live from heynanny.in. New requests appear here automatically.</p>
+            <h1 className="font-display text-[1.9rem] leading-tight text-plum">Enquiries</h1>
+            <p className="mt-0.5 text-sm text-muted">Website, Google Ads and Meta lead forms. New enquiries appear here automatically.</p>
           </div>
           <button
             type="button"
             disabled={!visible.length}
-            onClick={() => downloadCsv(visible, `heynanny-bookings-${localISODate(new Date())}.csv`)}
+            onClick={() => downloadCsv(visible, `heynanny-enquiries-${localISODate(new Date())}.csv`)}
             className="inline-flex h-10 items-center gap-2 rounded-full bg-paper px-4 text-sm font-semibold text-plum ring-1 ring-line hover:bg-white disabled:opacity-50"
           >
             <Download className="size-4" aria-hidden="true" />
@@ -160,14 +222,20 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Booking[] }) {
 
         {/* Summary */}
         <section aria-label="Summary" className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <StatCard label="New requests" value={stats.newRequests} hint="Waiting for a call" accent onClick={() => setTab("pending")} />
+          <StatCard label="New enquiries" value={stats.newLeads} hint="Waiting for a call" accent onClick={() => setTab("new")} />
           <StatCard label="Received today" value={stats.today} hint="All statuses" onClick={() => { setRange("today"); setTab("all"); }} />
-          <StatCard label="Contacted" value={stats.contacted} hint="Waiting to confirm" onClick={() => setTab("contacted")} />
           <StatCard
-            label="Confirmed this month"
-            value={stats.confirmedMonth}
-            hint={`${formatINR(stats.confirmedValue)} (excl. GST)`}
-            onClick={() => setTab("confirmed")}
+            label="Call backs due"
+            value={dueCallbacks.length}
+            hint={`${callbacksToday} more later today · ${stats.contacted} contacted`}
+            alert={dueCallbacks.length > 0}
+            onClick={() => setTab("contacted")}
+          />
+          <StatCard
+            label="Converted this month"
+            value={stats.convertedMonth}
+            hint={`Out of ${stats.monthLeads} enquiries this month`}
+            onClick={() => setTab("converted")}
           />
         </section>
 
@@ -181,11 +249,12 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Booking[] }) {
                 type="search"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search name, phone, email, request ID, pincode"
+                placeholder="Search name, phone, email, area, notes"
                 className="h-10 w-full rounded-full border border-line bg-white pl-10 pr-4 text-sm text-plum placeholder:text-muted/80 focus:border-plum focus:outline-none"
               />
             </label>
-            <Select label="Service" value={service} onChange={setService} options={[["all", "All services"], ...Object.entries(SERVICES).map(([id, s]) => [id, s.name] as [string, string])]} />
+            <Select label="Type of care" value={care} onChange={setCare} options={[["all", "All care types"], ...careTypes.map((c) => [c, careShort(c)] as [string, string])]} />
+            <Select label="Source" value={origin} onChange={setOrigin} options={[["all", "All channels"], ...ORIGINS.map((o) => [o, ORIGIN_META[o].label] as [string, string])]} />
             <Select label="Lead source" value={source} onChange={setSource} options={[["all", "All sources"], ...sources.map((s) => [s, s] as [string, string])]} />
             <Select label="Received" value={range} onChange={(v) => setRange(v as Range)} options={RANGES.map((r) => [r.id, r.label] as [string, string])} />
             {filtersOn && (
@@ -193,8 +262,9 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Booking[] }) {
                 type="button"
                 onClick={() => {
                   setSearch("");
-                  setService("all");
+                  setCare("all");
                   setSource("all");
+                  setOrigin("all");
                   setRange("all");
                 }}
                 className="inline-flex h-10 items-center gap-1 rounded-full px-3 text-sm font-semibold text-rose-deep hover:bg-blush/50"
@@ -222,7 +292,7 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Booking[] }) {
                   {t.label}
                   <span
                     className={`min-w-6 rounded-full px-1.5 py-0.5 text-xs tabular-nums ${
-                      active ? "bg-milk/20 text-milk" : t.id === "pending" && tabCounts.pending ? "bg-rose text-white" : "bg-beige text-muted"
+                      active ? "bg-milk/20 text-milk" : t.id === "new" && tabCounts.new ? "bg-rose text-white" : "bg-beige text-muted"
                     }`}
                   >
                     {tabCounts[t.id]}
@@ -234,22 +304,50 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Booking[] }) {
         </section>
 
         {/* Table */}
-        <section aria-label="Bookings" className="mt-4">
+        <section aria-label="Enquiries" className="mt-4">
           {error ? (
             <p role="alert" className="rounded-[20px] bg-red-50 px-4 py-3 text-sm text-red-700">
               {error}
             </p>
           ) : loading ? (
-            <div className="rounded-[20px] border border-line bg-paper px-4 py-16 text-center text-sm text-muted">Loading bookings…</div>
+            <div className="rounded-[20px] border border-line bg-paper px-4 py-16 text-center text-sm text-muted">Loading enquiries…</div>
           ) : (
-            <BookingsTable bookings={visible} now={now} selectedId={selectedId} onSelect={setSelectedId} emptyHint={tabEmptyHint(tab, !!filtersOn)} />
+            <LeadsTable leads={visible} now={now} selectedId={selectedId} onSelect={setSelectedId} emptyHint={tabEmptyHint(tab, !!filtersOn)} staffList={staffList} />
           )}
         </section>
       </main>
 
-      {selected && <BookingDetail booking={selected} staff={staff} demo={!!demo} onClose={() => setSelectedId(null)} />}
+      {selected && <LeadDetail lead={selected} staff={staff} staffList={staffList} demo={!!demo} onClose={() => setSelectedId(null)} />}
 
-      {/* New request toast */}
+      {/* Call back reminder */}
+      {reminder && (
+        <div className={`toast-in fixed left-1/2 z-40 w-[min(420px,calc(100vw-2rem))] -translate-x-1/2 ${arrivals.length ? "bottom-24" : "bottom-5"}`}>
+          <div className="flex items-center gap-3 rounded-[18px] bg-[#7a5410] px-4 py-3 text-white shadow-lift" role="status">
+            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-white/15">
+              <PhoneCall className="size-4" aria-hidden="true" />
+            </span>
+            <button
+              type="button"
+              className="min-w-0 flex-1 text-left"
+              onClick={() => {
+                setTab("contacted");
+                setSelectedId(reminder.lead.id);
+                dismissReminders();
+              }}
+            >
+              <p className="text-sm font-bold">Call back due{pendingReminders.length > 1 ? ` (${pendingReminders.length})` : ""}</p>
+              <p className="truncate text-xs text-white/85">
+                {reminder.lead.name || displayPhone(reminder.lead.phone)} · {formatCallback(reminder.at, now)} · tap to open
+              </p>
+            </button>
+            <button type="button" onClick={dismissReminders} aria-label="Dismiss" className="grid size-8 place-items-center rounded-full hover:bg-white/10">
+              <X className="size-4" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* New enquiry toast */}
       {arrivals.length > 0 && (
         <div className="toast-in fixed bottom-5 left-1/2 z-40 w-[min(420px,calc(100vw-2rem))] -translate-x-1/2">
           <div className="flex items-center gap-3 rounded-[18px] bg-plum px-4 py-3 text-milk shadow-lift" role="status">
@@ -260,16 +358,16 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Booking[] }) {
               type="button"
               className="min-w-0 flex-1 text-left"
               onClick={() => {
-                setTab("pending");
+                setTab("new");
                 setSelectedId(arrivals[0]!.id);
                 clearArrivals();
               }}
             >
               <p className="text-sm font-bold">
-                {arrivals.length === 1 ? "New booking request" : `${arrivals.length} new booking requests`}
+                {arrivals.length === 1 ? "New enquiry" : `${arrivals.length} new enquiries`}
               </p>
               <p className="truncate text-xs text-blush/90">
-                {arrivals[0]!.customer.name} · {SERVICES[arrivals[0]!.serviceId]?.name ?? arrivals[0]!.serviceId} · tap to open
+                {arrivals[0]!.name ? `${arrivals[0]!.name} · ` : ""}{careShort(arrivals[0]!.careType)} · {arrivals[0]!.area} · tap to open
               </p>
             </button>
             <button type="button" onClick={clearArrivals} aria-label="Dismiss" className="grid size-8 place-items-center rounded-full hover:bg-white/10">
@@ -283,9 +381,9 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Booking[] }) {
 }
 
 function tabEmptyHint(tab: Tab, filtersOn: boolean) {
-  if (filtersOn) return "No bookings match these filters.";
-  if (tab === "pending") return "No new requests. You're all caught up.";
-  if (tab === "all") return "No bookings yet.";
+  if (filtersOn) return "No enquiries match these filters.";
+  if (tab === "new") return "No new enquiries. You're all caught up.";
+  if (tab === "all") return "No enquiries yet.";
   return "Nothing here yet.";
 }
 
@@ -294,12 +392,15 @@ function StatCard({
   value,
   hint,
   accent,
+  alert,
   onClick,
 }: {
   label: string;
   value: number;
   hint: string;
   accent?: boolean;
+  /** Something overdue: red outline. */
+  alert?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -307,7 +408,7 @@ function StatCard({
       type="button"
       onClick={onClick}
       className={`rounded-[20px] p-4 text-left transition-[transform,box-shadow] duration-200 hover:-translate-y-[2px] hover:shadow-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-plum ${
-        accent ? "bg-plum text-milk" : "border border-line bg-paper text-plum"
+        accent ? "bg-plum text-milk" : alert ? "border border-red-300 bg-red-50 text-red-800" : "border border-line bg-paper text-plum"
       }`}
     >
       <p className={`text-xs font-semibold uppercase tracking-wider ${accent ? "text-blush" : "text-muted"}`}>{label}</p>

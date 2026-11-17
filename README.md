@@ -1,9 +1,11 @@
 # HeyNanny Ops
 
-Internal dashboard for the operations team: every booking request from heynanny.in, live.
+Internal dashboard for the operations team: every enquiry from the Contact and WhatsApp forms on heynanny.in, and from Meta (Facebook / Instagram) lead ads, live.
+
+Meta leads are saved by the `leads` Cloud Functions in the website repo (`hey-nanny/functions-leads`, see its README for the Meta setup). They have `channel: "meta_lead_ad"`, a `META-…` reference, `leadSource` `meta_facebook` / `meta_instagram` / `meta_organic`, and a **Meta ad** section in the detail panel with campaign, ad set, ad, form and every form answer.
 
 - **Who can use it:** `@heynanny.in` Google accounts that an admin has given a role (`ops` or `admin`).
-- **Data:** the same Firestore `bookings` collection the website writes to (Firebase project `hey-nanny-web`).
+- **Data:** the Firestore `leads` collection the website writes to (Firebase project `hey-nanny-web`).
 - **Security:** enforced by Firestore rules, which live in the **website repo** (`hey-nanny/firestore.rules`). Deploy rules from there only.
 
 ## Features
@@ -31,11 +33,14 @@ To preview the UI with sample data and no sign-in, add `NEXT_PUBLIC_OPS_DEMO=1` 
 They must sign in once first (they'll see "No access yet"), then:
 
 ```bash
-npm run role -- priya@heynanny.in ops      # view + update bookings
-npm run role -- sandeep@heynanny.in admin  # same, plus admin-only actions (delete bookings)
+npm run role -- priya@heynanny.in ops      # view + update enquiries
+npm run role -- sandeep@heynanny.in admin  # same, plus admin-only actions (delete enquiries)
 npm run role -- priya@heynanny.in none     # remove access
 npm run role -- --list                     # who has access
+npm run role -- --sync                     # rebuild the "Assigned to" list from current roles
 ```
+
+Every role change also updates the Firestore `staff` collection, which fills the **Assigned to** dropdown (name from their Google account). Run `--sync` once after first setting this up, so people who already have access appear.
 
 They then press **Check again** (or reload).
 

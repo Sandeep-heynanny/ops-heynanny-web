@@ -8,6 +8,7 @@
         ".git",
         ".next",
         ".firebase",
+        "backups",
         "service-account*.json",
         "*-firebase-adminsdk-*.json",
         "firebase-debug.log",

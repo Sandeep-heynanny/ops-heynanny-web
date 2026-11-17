@@ -54,3 +54,6 @@ previews/
 service-account*.json
 *-firebase-adminsdk-*.json
 .firebase/
+
+# Local data backups (contain customer phone numbers)
+backups/

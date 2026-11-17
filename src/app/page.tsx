@@ -5,12 +5,12 @@ import { useState } from "react";
 import { Dashboard } from "@/components/Dashboard";
 import { LoadingScreen, NoAccessScreen, SignInScreen } from "@/components/SignIn";
 import { AuthProvider, useAuth } from "@/lib/auth";
-import { DEMO_STAFF, demoBookings } from "@/lib/demo";
+import { DEMO_STAFF, demoLeads } from "@/lib/demo";
 
 const DEMO = process.env.NEXT_PUBLIC_OPS_DEMO === "1";
 
 export default function Home() {
-  const [demo] = useState(() => (DEMO ? demoBookings() : undefined));
+  const [demo] = useState(() => (DEMO ? demoLeads() : undefined));
   return (
     <AuthProvider demo={DEMO ? DEMO_STAFF : undefined}>
       <Gate demo={demo} />
@@ -18,7 +18,7 @@ export default function Home() {
   );
 }
 
-function Gate({ demo }: { demo?: ReturnType<typeof demoBookings> }) {
+function Gate({ demo }: { demo?: ReturnType<typeof demoLeads> }) {
   const { state } = useAuth();
   switch (state.status) {
     case "loading":

@@ -1,33 +1,31 @@
-import { AGE_GROUPS, CARE_TYPES, planName, serviceName } from "@/lib/catalog";
 import { formatDateTime, toDate } from "@/lib/format";
-import { requestId, STATUS_META, type Booking } from "@/lib/types";
+import { CLOSE_REASONS, formName, leadOrigin, ORIGIN_META, leadRef, questionLabel, STATUS_META, type Lead } from "@/lib/types";
 
-const COLUMNS: [string, (b: Booking) => string | number][] = [
-  ["Request ID", (b) => requestId(b)],
-  ["Received", (b) => formatDateTime(toDate(b.createdAt))],
-  ["Status", (b) => STATUS_META[b.status]?.label ?? b.status],
-  ["Name", (b) => b.customer.name],
-  // "98765 43210" (Indian numbers) so Excel keeps it as text instead of a number/formula.
-  ["Phone", (b) => b.customer.phone.replace(/^\+91(\d{5})(\d{5})$/, "$1 $2")],
-  ["Email", (b) => b.customer.email],
-  ["Service", (b) => serviceName(b.serviceId)],
-  ["Plan", (b) => planName(b.serviceId, b.planId)],
-  ["Type of care", (b) => (b.bookingDetails.careType ? (CARE_TYPES[b.bookingDetails.careType] ?? b.bookingDetails.careType) : "")],
-  ["Start date", (b) => b.bookingDetails.date],
-  ["Start time", (b) => b.bookingDetails.startTime],
-  ["Children", (b) => b.bookingDetails.children.length],
-  ["Child ages", (b) => b.bookingDetails.children.map((c) => AGE_GROUPS[c.ageGroup] ?? c.ageGroup).join("; ")],
-  ["Address", (b) => b.bookingDetails.address.line1],
-  ["City", (b) => b.bookingDetails.address.city],
-  ["Pincode", (b) => b.bookingDetails.address.pincode],
-  ["Customer notes", (b) => b.bookingDetails.notes ?? ""],
-  ["Plan price (excl. GST)", (b) => b.pricing.subtotal],
-  ["GST", (b) => b.pricing.taxes],
-  ["Total", (b) => b.pricing.totalAmount],
-  ["Lead source", (b) => b.leadSource ?? ""],
-  ["Assigned to", (b) => b.ops?.assignedTo ?? ""],
-  ["Ops notes", (b) => b.ops?.notes ?? ""],
-  ["Last updated by", (b) => b.ops?.updatedBy ?? ""],
+const COLUMNS: [string, (l: Lead) => string | number][] = [
+  ["Reference", (l) => leadRef(l)],
+  ["Received", (l) => formatDateTime(toDate(l.createdAt))],
+  ["Status", (l) => STATUS_META[l.status]?.label ?? l.status],
+  ["Name", (l) => l.name ?? ""],
+  // "98765 43210" so Excel keeps it as text instead of a number.
+  ["Phone", (l) => l.phone.replace(/^(\d{5})(\d{5})$/, "$1 $2")],
+  ["Email", (l) => l.email ?? ""],
+  ["Type of care", (l) => l.careType],
+  ["Needed", (l) => l.when],
+  ["Area", (l) => l.area],
+  ["Channel", (l) => ORIGIN_META[leadOrigin(l)].label],
+  ["Form", (l) => formName(l)],
+  ["Page", (l) => l.page ?? ""],
+  ["Lead source", (l) => l.leadSource ?? ""],
+  ["Meta campaign", (l) => l.meta?.campaignName ?? ""],
+  ["Meta ad set", (l) => l.meta?.adsetName ?? ""],
+  ["Meta ad", (l) => l.meta?.adName ?? ""],
+  ["Meta form answers", (l) => (l.meta?.answers ?? []).map((a) => `${questionLabel(a.question)}: ${a.answer}`).join(" | ")],
+  ["Assigned to", (l) => l.ops?.assignedTo ?? ""],
+  ["Outcome", (l) => (l.status === "not_interested" && l.ops?.closeReason ? (CLOSE_REASONS[l.ops.closeReason.category]?.label ?? "") : "")],
+  ["Reason", (l) => (l.status === "not_interested" ? (l.ops?.closeReason?.reason ?? "") : "")],
+  ["Call back", (l) => (l.status === "contacted" ? formatDateTime(toDate(l.ops?.callbackAt)).replace("—", "") : "")],
+  ["Ops notes", (l) => l.ops?.notes ?? ""],
+  ["Last updated by", (l) => l.ops?.updatedBy ?? ""],
 ];
 
 function cell(v: string | number) {
@@ -38,8 +36,8 @@ function cell(v: string | number) {
 }
 
 /** Downloads a CSV that opens directly in Excel / Google Sheets (UTF-8 with BOM). */
-export function downloadCsv(bookings: Booking[], filename: string) {
-  const lines = [COLUMNS.map(([h]) => cell(h)).join(","), ...bookings.map((b) => COLUMNS.map(([, f]) => cell(f(b))).join(","))];
+export function downloadCsv(leads: Lead[], filename: string) {
+  const lines = [COLUMNS.map(([h]) => cell(h)).join(","), ...leads.map((l) => COLUMNS.map(([, f]) => cell(f(l))).join(","))];
   const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = Object.assign(document.createElement("a"), { href: url, download: filename });
