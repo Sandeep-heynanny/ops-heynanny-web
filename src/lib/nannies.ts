@@ -70,13 +70,15 @@ export type Nanny = {
   /** Internal, never shown to customers. */
   notes?: string;
   createdAt?: Timestamp | null;
+  /** Who first added her. Set once; edits never change it. */
+  createdBy?: string | null;
   updatedAt?: Timestamp | null;
   updatedBy?: string;
 };
 
 export type NannyInput = Omit<
   Nanny,
-  "id" | "createdAt" | "updatedAt" | "updatedBy"
+  "id" | "createdAt" | "createdBy" | "updatedAt" | "updatedBy"
 >;
 
 export const NANNY_STATUS_META: Record<
@@ -238,6 +240,7 @@ export function normaliseNanny(id: string, d: Record<string, unknown>): Nanny {
     documents: (d.documents as Nanny["documents"]) ?? {},
     notes: typeof d.notes === "string" ? d.notes : "",
     createdAt: (d.createdAt as Timestamp) ?? null,
+    createdBy: str(d.createdBy),
     updatedAt: (d.updatedAt as Timestamp) ?? null,
     updatedBy: str(d.updatedBy) ?? undefined,
   };
@@ -257,6 +260,7 @@ export async function saveNanny(
     await setDoc(doc(db(), "nannies", id), {
       ...data,
       createdAt: serverTimestamp(),
+      createdBy: by,
     });
   else await updateDoc(doc(db(), "nannies", id), data);
 }
@@ -344,6 +348,7 @@ export async function importNannies(rows: NannyInput[], by: string) {
       batch.set(doc(collection(db(), "nannies")), {
         ...r,
         createdAt: serverTimestamp(),
+        createdBy: by,
         updatedAt: serverTimestamp(),
         updatedBy: by,
       });

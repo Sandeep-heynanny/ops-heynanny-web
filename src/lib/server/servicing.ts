@@ -102,7 +102,19 @@ export async function sendLeadToServicing(
                 toDate(b.get("createdAt")).getTime() -
                 toDate(a.get("createdAt")).getTime(),
             )[0];
-    const intake = { ...form, submittedAt: now, submittedBy: by, leadId };
+    // A form already on the case is being edited: keep who first submitted it.
+    const prev = open?.get("intake") as
+      { submittedAt?: unknown; submittedBy?: unknown } | undefined;
+    const intake = prev
+      ? {
+          ...form,
+          submittedAt: prev.submittedAt ?? now,
+          submittedBy: prev.submittedBy ?? by,
+          editedAt: now,
+          editedBy: by,
+          leadId,
+        }
+      : { ...form, submittedAt: now, submittedBy: by, leadId };
 
     let caseId: string;
     let outcome: FromLeadOutcome;
@@ -169,9 +181,63 @@ export async function sendLeadToServicing(
       "ops.servicingCaseId": caseId,
       ...(linkedId === caseId ? {} : { "ops.servicingAt": now }),
       "ops.servicingForm": form,
-      "ops.servicingFormAt": now,
-      "ops.servicingFormBy": by,
+      ...(l.ops?.servicingFormAt
+        ? { "ops.servicingFormEditedAt": now, "ops.servicingFormEditedBy": by }
+        : { "ops.servicingFormAt": now, "ops.servicingFormBy": by }),
     });
     return { outcome, caseId };
+  });
+}
+
+/**
+ * The servicing team (or a manager / admin) edits the Servicing form on a case.
+ * Saves it on the case and on the enquiry's copy, so sales sees the same
+ * answers; who first submitted it is kept, and who edited it is recorded.
+ */
+export async function saveCaseIntake(
+  caseId: string,
+  form: ServicingFormValue,
+  by: string,
+): Promise<"saved" | "not_found"> {
+  const db = adminDb();
+  const caseRef = db.collection("servicing").doc(caseId);
+  const now = new Date();
+  return db.runTransaction(async (tx) => {
+    const c = await tx.get(caseRef);
+    if (!c.exists) return "not_found" as const;
+    const prev = c.get("intake") as
+      { submittedAt?: unknown; submittedBy?: unknown } | undefined;
+    const leadId = (c.get("leadId") as string | null) ?? null;
+    const lead = leadId
+      ? await tx.get(db.collection("leads").doc(leadId))
+      : null;
+    tx.update(caseRef, {
+      intake: prev
+        ? {
+            ...form,
+            submittedAt: prev.submittedAt ?? now,
+            submittedBy: prev.submittedBy ?? by,
+            editedAt: now,
+            editedBy: by,
+            leadId,
+          }
+        : { ...form, submittedAt: now, submittedBy: by, leadId },
+      "customer.name": form.customerName,
+      "customer.phone": form.customerPhone,
+      careType: form.careType,
+      updatedAt: now,
+      updatedBy: by,
+    });
+    if (lead?.exists)
+      tx.update(lead.ref, {
+        "ops.servicingForm": form,
+        ...(lead.get("ops.servicingFormAt")
+          ? {
+              "ops.servicingFormEditedAt": now,
+              "ops.servicingFormEditedBy": by,
+            }
+          : { "ops.servicingFormAt": now, "ops.servicingFormBy": by }),
+      });
+    return "saved" as const;
   });
 }

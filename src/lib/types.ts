@@ -52,7 +52,12 @@ export type OpsFields = {
   /** Copy of the submitted form (the ops team can't read servicing cases). */
   servicingForm?: ServicingFormValue;
   servicingFormBy?: string;
+  /** Last edit of the form after it was submitted (sales or servicing). */
+  servicingFormEditedAt?: Timestamp;
+  servicingFormEditedBy?: string;
   closedAt?: Timestamp;
+  /** Enquiries added from the dashboard (not the website): who added it. */
+  createdBy?: string;
   /** When to call a contacted lead back. Shown as a reminder on the dashboard. */
   callbackAt?: Timestamp;
   /** Why a lead didn't go ahead. Required when the status is "not_interested". */
@@ -202,7 +207,7 @@ export function displayPhone(phone: string) {
 }
 
 /** Where a lead came from, for the badge and the "Source" filter. */
-export type LeadOrigin = "google_ads" | "meta" | "website";
+export type LeadOrigin = "google_ads" | "meta" | "website" | "team";
 
 export const ORIGIN_META: Record<LeadOrigin, { label: string; tone: string }> =
   {
@@ -212,7 +217,22 @@ export const ORIGIN_META: Record<LeadOrigin, { label: string; tone: string }> =
     },
     meta: { label: "Meta", tone: "bg-[#ece6fb] text-[#5b3cc4] ring-[#d3c6f5]" },
     website: { label: "Website", tone: "bg-beige text-muted ring-line" },
+    team: {
+      label: "Added by team",
+      tone: "bg-[#dff3ef] text-[#1d6b5f] ring-[#bfe3dc]",
+    },
   };
+
+/** Enquiries the team adds from the dashboard (a referral, a phone call…). */
+export const TEAM_CHANNEL = "ops_team";
+export const TEAM_LEAD_SOURCES = [
+  "Referral",
+  "Phone call",
+  "WhatsApp",
+  "Instagram",
+  "Walk-in",
+  "Other",
+] as const;
 
 export const ORIGINS = Object.keys(ORIGIN_META) as LeadOrigin[];
 
@@ -224,6 +244,7 @@ export function leadOrigin(
   l: Pick<Lead, "channel" | "leadSource" | "page">,
 ): LeadOrigin {
   const src = (l.leadSource ?? "").toLowerCase();
+  if (l.channel === TEAM_CHANNEL) return "team";
   if (l.channel === META_CHANNEL || src.startsWith("meta")) return "meta";
   if (
     l.page?.startsWith("/nanny-services-bangalore") ||

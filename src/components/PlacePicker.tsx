@@ -3,7 +3,17 @@
 import { Loader2, MapPin, Search, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
-import { areaAndCity, BENGALURU, mapsConfigured, mapsLibs, placesLib, type GeoPlace, type MapsMap, type MapsMarker, type Suggestion } from "@/lib/maps";
+import {
+  areaAndCity,
+  BENGALURU,
+  mapsConfigured,
+  mapsLibs,
+  placesLib,
+  type GeoPlace,
+  type MapsMap,
+  type MapsMarker,
+  type Suggestion,
+} from "@/lib/maps";
 
 /**
  * Google Maps location picker: type, pick a suggestion, and the address plus
@@ -23,7 +33,9 @@ export function PlacePicker({
   placeholder?: string;
   invalid?: boolean;
 }) {
-  const [maps, setMaps] = useState<"off" | "on" | "failed">(mapsConfigured() ? "on" : "off");
+  const [maps, setMaps] = useState<"off" | "on" | "failed">(
+    mapsConfigured() ? "on" : "off",
+  );
   const [failReason, setFailReason] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [open, setOpen] = useState(false);
@@ -37,7 +49,9 @@ export function PlacePicker({
   useEffect(() => {
     const onAuth = () => {
       setMaps("failed");
-      setFailReason("The Google Maps key isn't allowed on this site. Type the address instead.");
+      setFailReason(
+        "The Google Maps key isn't allowed on this site. Type the address instead.",
+      );
     };
     window.addEventListener("hn-maps-auth-failed", onAuth);
     return () => window.removeEventListener("hn-maps-auth-failed", onAuth);
@@ -54,19 +68,22 @@ export function PlacePicker({
       try {
         const lib = await placesLib();
         session.current ??= new lib.AutocompleteSessionToken();
-        const { suggestions: s } = await lib.AutocompleteSuggestion.fetchAutocompleteSuggestions({
-          input: q,
-          sessionToken: session.current,
-          includedRegionCodes: ["in"],
-          locationBias: { center: BENGALURU, radius: 50_000 },
-          language: "en-IN",
-        });
+        const { suggestions: s } =
+          await lib.AutocompleteSuggestion.fetchAutocompleteSuggestions({
+            input: q,
+            sessionToken: session.current,
+            includedRegionCodes: ["in"],
+            locationBias: { center: BENGALURU, radius: 50_000 },
+            language: "en-IN",
+          });
         setSuggestions(s.filter((x) => x.placePrediction).slice(0, 6));
         setActive(0);
         setOpen(true);
       } catch (e) {
         setMaps("failed");
-        setFailReason(`${(e as Error).message || "Map search failed."} Type the address instead.`);
+        setFailReason(
+          `${(e as Error).message || "Map search failed."} Type the address instead.`,
+        );
       } finally {
         setSearching(false);
       }
@@ -80,14 +97,22 @@ export function PlacePicker({
     setPicking(true);
     try {
       const place = p.toPlace();
-      await place.fetchFields({ fields: ["formattedAddress", "location", "addressComponents"] });
+      await place.fetchFields({
+        fields: ["formattedAddress", "location", "addressComponents"],
+      });
       session.current = null; // a session ends with the pick
       const loc = place.location;
       if (!loc) throw new Error("no location");
       const { area, city } = areaAndCity(place.addressComponents);
       onChange({
         address: place.formattedAddress || p.text.text,
-        geo: { lat: Number(loc.lat().toFixed(6)), lng: Number(loc.lng().toFixed(6)), placeId: p.placeId, area, city },
+        geo: {
+          lat: Number(loc.lat().toFixed(6)),
+          lng: Number(loc.lng().toFixed(6)),
+          placeId: p.placeId,
+          area,
+          city,
+        },
       });
     } catch {
       setFailReason("Couldn't get that place. Try another suggestion.");
@@ -100,9 +125,15 @@ export function PlacePicker({
     <div className="mt-1">
       <div className="relative">
         {maps === "on" ? (
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted" aria-hidden="true" />
+          <Search
+            className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted"
+            aria-hidden="true"
+          />
         ) : (
-          <MapPin className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted" aria-hidden="true" />
+          <MapPin
+            className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted"
+            aria-hidden="true"
+          />
         )}
         <input
           value={address}
@@ -125,7 +156,9 @@ export function PlacePicker({
               setActive((a) => (a + 1) % suggestions.length);
             } else if (e.key === "ArrowUp") {
               e.preventDefault();
-              setActive((a) => (a - 1 + suggestions.length) % suggestions.length);
+              setActive(
+                (a) => (a - 1 + suggestions.length) % suggestions.length,
+              );
             } else if (e.key === "Enter") {
               e.preventDefault();
               void pick(suggestions[active]!);
@@ -134,11 +167,20 @@ export function PlacePicker({
               setOpen(false);
             }
           }}
-          placeholder={maps === "on" ? placeholder : "Area and address, e.g. ISRO Layout, near…"}
+          placeholder={
+            maps === "on"
+              ? placeholder
+              : "Area and address, e.g. ISRO Layout, near…"
+          }
           maxLength={300}
           className={`h-10 w-full rounded-xl border bg-white pl-9 pr-9 text-sm text-plum focus:border-plum focus:outline-none ${invalid ? "border-red-400" : "border-line"}`}
         />
-        {(searching || picking) && <Loader2 className="absolute right-3 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted" aria-hidden="true" />}
+        {(searching || picking) && (
+          <Loader2
+            className="absolute right-3 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted"
+            aria-hidden="true"
+          />
+        )}
         {!searching && !picking && address && (
           <button
             type="button"
@@ -153,7 +195,11 @@ export function PlacePicker({
           </button>
         )}
         {open && suggestions.length > 0 && (
-          <ul id={listId} role="listbox" className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-xl bg-white py-1 shadow-soft ring-1 ring-line">
+          <ul
+            id={listId}
+            role="listbox"
+            className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-xl bg-white py-1 shadow-soft ring-1 ring-line"
+          >
             {suggestions.map((s, i) => (
               <li
                 key={s.placePrediction!.placeId}
@@ -166,30 +212,56 @@ export function PlacePicker({
                 onMouseEnter={() => setActive(i)}
                 className={`flex cursor-pointer items-start gap-2 px-3 py-2 text-sm ${i === active ? "bg-milk" : ""}`}
               >
-                <MapPin className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden="true" />
+                <MapPin
+                  className="mt-0.5 size-4 shrink-0 text-muted"
+                  aria-hidden="true"
+                />
                 <span className="min-w-0">
-                  <span className="block truncate font-semibold text-plum">{s.placePrediction!.mainText?.text ?? s.placePrediction!.text.text}</span>
-                  {s.placePrediction!.secondaryText?.text && <span className="block truncate text-xs text-muted">{s.placePrediction!.secondaryText.text}</span>}
+                  <span className="block truncate font-semibold text-plum">
+                    {s.placePrediction!.mainText?.text ??
+                      s.placePrediction!.text.text}
+                  </span>
+                  {s.placePrediction!.secondaryText?.text && (
+                    <span className="block truncate text-xs text-muted">
+                      {s.placePrediction!.secondaryText.text}
+                    </span>
+                  )}
                 </span>
               </li>
             ))}
-            <li className="px-3 pb-1 pt-1.5 text-right text-[0.65rem] text-muted">Powered by Google</li>
+            <li className="px-3 pb-1 pt-1.5 text-right text-[0.65rem] text-muted">
+              Powered by Google
+            </li>
           </ul>
         )}
       </div>
 
-      {maps === "on" && geo && <PinMap geo={geo} onMove={(g) => onChange({ address, geo: g })} />}
-      {maps === "on" && !geo && address.trim() && !searching && !picking && (
-        <p className="mt-1 text-xs text-[#7a5410]">Pick a suggestion from the list so the location is on the map.</p>
+      {maps === "on" && geo && (
+        <PinMap geo={geo} onMove={(g) => onChange({ address, geo: g })} />
       )}
-      {maps === "off" && <p className="mt-1 text-xs text-muted">Map search isn&apos;t set up yet, so type the address.</p>}
+      {maps === "on" && !geo && address.trim() && !searching && !picking && (
+        <p className="mt-1 text-xs text-[#7a5410]">
+          Pick a suggestion from the list so the location is on the map.
+        </p>
+      )}
+      {maps === "off" && (
+        <p className="mt-1 text-xs text-muted">
+          Map search isn&apos;t set up yet, so type the address.
+        </p>
+      )}
       {failReason && <p className="mt-1 text-xs text-red-700">{failReason}</p>}
     </div>
   );
 }
 
 /** Small map with a draggable pin to fine-tune the spot. */
-function PinMap({ geo, onMove }: { geo: GeoPlace; onMove: (g: GeoPlace) => void }) {
+function PinMap({
+  geo,
+  onMove,
+}: {
+  geo: GeoPlace;
+  onMove: (g: GeoPlace) => void;
+}) {
   const el = useRef<HTMLDivElement>(null);
   const map = useRef<MapsMap | null>(null);
   const marker = useRef<MapsMarker | null>(null);
@@ -202,12 +274,32 @@ function PinMap({ geo, onMove }: { geo: GeoPlace; onMove: (g: GeoPlace) => void 
     let off = false;
     void mapsLibs().then(({ Map, Marker }) => {
       if (off || !el.current || map.current) return;
-      const center = { lat: latest.current.geo.lat, lng: latest.current.geo.lng };
-      map.current = new Map(el.current, { center, zoom: 16, disableDefaultUI: true, zoomControl: true, clickableIcons: false, gestureHandling: "cooperative" });
-      marker.current = new Marker({ map: map.current, position: center, draggable: true, title: "Drag to the exact spot" });
+      const center = {
+        lat: latest.current.geo.lat,
+        lng: latest.current.geo.lng,
+      };
+      map.current = new Map(el.current, {
+        center,
+        zoom: 16,
+        disableDefaultUI: true,
+        zoomControl: true,
+        clickableIcons: false,
+        gestureHandling: "cooperative",
+      });
+      marker.current = new Marker({
+        map: map.current,
+        position: center,
+        draggable: true,
+        title: "Drag to the exact spot",
+      });
       const moveTo = (lat: number, lng: number) => {
         const g = latest.current.geo;
-        latest.current.onMove({ ...g, lat: Number(lat.toFixed(6)), lng: Number(lng.toFixed(6)), pinMoved: true });
+        latest.current.onMove({
+          ...g,
+          lat: Number(lat.toFixed(6)),
+          lng: Number(lng.toFixed(6)),
+          pinMoved: true,
+        });
       };
       marker.current.addListener("dragend", () => {
         const p = marker.current?.getPosition();
@@ -215,7 +307,10 @@ function PinMap({ geo, onMove }: { geo: GeoPlace; onMove: (g: GeoPlace) => void 
       });
       map.current.addListener("click", (e) => {
         if (!e.latLng) return;
-        marker.current?.setPosition({ lat: e.latLng.lat(), lng: e.latLng.lng() });
+        marker.current?.setPosition({
+          lat: e.latLng.lat(),
+          lng: e.latLng.lng(),
+        });
         moveTo(e.latLng.lat(), e.latLng.lng());
       });
     });
@@ -233,10 +328,18 @@ function PinMap({ geo, onMove }: { geo: GeoPlace; onMove: (g: GeoPlace) => void 
 
   return (
     <div className="mt-2">
-      <div ref={el} className="h-44 w-full overflow-hidden rounded-xl bg-beige ring-1 ring-line" aria-label="Map: drag the pin to the exact spot" />
+      <div
+        ref={el}
+        className="h-44 w-full overflow-hidden rounded-xl bg-beige ring-1 ring-line"
+        aria-label="Map: drag the pin to the exact spot"
+      />
       <p className="mt-1 text-xs text-muted">
-        {geo.area ? `${geo.area}${geo.city && geo.city !== geo.area ? `, ${geo.city}` : ""} · ` : ""}
-        {geo.pinMoved ? "Pin adjusted." : "Drag the pin (or tap the map) if the spot isn't exact."}
+        {geo.area
+          ? `${geo.area}${geo.city && geo.city !== geo.area ? `, ${geo.city}` : ""} · `
+          : ""}
+        {geo.pinMoved
+          ? "Pin adjusted."
+          : "Drag the pin (or tap the map) if the spot isn't exact."}
       </p>
     </div>
   );

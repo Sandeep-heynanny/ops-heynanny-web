@@ -1,7 +1,16 @@
 "use client";
 
 import {
+  ArrowRight,
+  Baby,
   Building2,
+  CalendarClock,
+  CalendarDays,
+  ChevronDown,
+  IndianRupee,
+  Languages,
+  MapPin,
+  User,
   Car,
   Check,
   ClipboardCopy,
@@ -16,11 +25,22 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import {
+  CaseProgress,
+  formatDay,
+  formatTime,
+  inr,
+  nextStep,
+  requirementLine,
+  StagePill,
+} from "@/components/CaseProgress";
 import { confirmDialog } from "@/components/ConfirmDialog";
+import { UpdatedBy } from "@/components/UpdatedBy";
 import { AppHeader } from "@/components/AppHeader";
 import { NannyAvatar } from "@/components/NannyAvatar";
 import { profileData } from "@/components/ProfileCard";
 import { SidePanel } from "@/components/NanniesPage";
+import { SuggestedNannies } from "@/components/SuggestedNannies";
 import type { Staff } from "@/lib/auth";
 import {
   formatDateTime,
@@ -43,27 +63,41 @@ import {
   cancelCase,
   CANCEL_REASONS,
   caseRef,
+  confirmRequest,
   createCase,
+  openRequests,
+  REQUEST_META,
+  requestWhen,
+  setRequestStatus,
+  type InterviewRequest,
   emptyTravel,
   newProposal,
   placeNanny,
+  replacePlacement,
   readNotes,
   REFUND_META,
+  CF_REFUND_META,
+  initiateCaseRefund,
+  liveCfRefunds,
+  syncCaseRefund,
   refundDue,
   reopenCase,
   saveNotes,
   STAGE_META,
-  bucketMeta,
   caseBucket,
   needsForm,
   saveIntake,
   type Intake,
   TRAVEL_MODES,
-  travelStatus,
   unplace,
   updateCase,
   updateRefund,
   useServicingCases,
+  AGING_META,
+  AGING_ORDER,
+  agingOf,
+  caseAgeDays,
+  type AgingId,
   type Proposal,
   type Refund,
   type Bucket,
@@ -81,17 +115,19 @@ import { ProfileShareDialog } from "@/components/ProfileShareDialog";
 import { ServicingForm } from "@/components/ServicingForm";
 import {
   emptyForm,
+  FORM_CARE_TYPES,
   formInputFromValue,
   guessCareType,
   type ServicingFormValue,
 } from "@/lib/servicing-form";
 import type { ProfileItem } from "@/lib/profile-image";
-import { displayPhone } from "@/lib/types";
+import { displayPhone, TEAM_LEAD_SOURCES } from "@/lib/types";
 import { Timestamp } from "firebase/firestore";
 
-type Tab = "active" | Bucket | "refunds" | "all";
+type Tab = "active" | "requests" | Bucket | "refunds" | "all";
 const TABS: { id: Tab; label: string }[] = [
   { id: "active", label: "Active" },
+  { id: "requests", label: "Interview requests" },
   { id: "form_pending", label: "Form pending" },
   { id: "new", label: "New" },
   { id: "profiles_shared", label: "Profiles shared" },
@@ -115,12 +151,6 @@ const ACTIVE: Bucket[] = [
   "placed",
   "travel",
 ];
-const inr = (n: number) =>
-  new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 0,
-  }).format(n);
 
 /** Servicing team + admins: every paying customer from payment to placement. */
 export function ServicingPage({
@@ -132,11 +162,22 @@ export function ServicingPage({
 }) {
   const { cases, loading, error } = useServicingCases(true, demo?.cases);
   const { nannies } = useNannies(true, demo?.nannies);
-  const team = servicingStaff(useStaffList(!!demo));
+  const allStaff = useStaffList(!!demo);
+  const team = servicingStaff(allStaff);
   const [tab, setTab] = useState<Tab>("active");
-  const [mine, setMine] = useState(false);
+  /** "all", "me", "none" (unassigned) or a staff email. */
+  const [assignee, setAssignee] = useState("all");
+  /** Aging tile picked (cases still being worked on, by days in servicing). */
+  const [aging, setAging] = useState<AgingId | null>(null);
+  /** "all", a FORM_CARE_TYPES value, or "none" (care type not set). */
+  const [nannyType, setNannyType] = useState("all");
   const [search, setSearch] = useState("");
-  const [openId, setOpenId] = useState<string | null>(null);
+  // ?case=<id> opens that case (link from the enquiry drawer).
+  const [openId, setOpenId] = useState<string | null>(() =>
+    typeof window === "undefined"
+      ? null
+      : new URLSearchParams(window.location.search).get("case"),
+  );
   const [creating, setCreating] = useState(false);
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -156,7 +197,11 @@ export function ServicingPage({
     const digits = q.replace(/\D/g, "");
     return cases.filter(
       (c) =>
-        (!mine || c.assignedTo === staff.email) &&
+        (assignee === "all" ||
+          (assignee === "none"
+            ? !c.assignedTo
+            : c.assignedTo === (assignee === "me" ? staff.email : assignee))) &&
+        (nannyType === "all" || caseNannyType(c) === nannyType) &&
         (!q ||
           (c.customer.name ?? "").toLowerCase().includes(q) ||
           (digits.length >= 3 && c.customer.phone.includes(digits)) ||
@@ -164,15 +209,26 @@ export function ServicingPage({
           (c.area ?? "").toLowerCase().includes(q) ||
           c.proposals.some((p) => p.nanny.name.toLowerCase().includes(q))),
     );
-  }, [cases, search, mine, staff.email]);
+  }, [cases, search, assignee, nannyType, staff.email]);
+  const assigneeOptions = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const t of team) m.set(t.email, t.name);
+    for (const c of cases)
+      if (c.assignedTo && !m.has(c.assignedTo))
+        m.set(c.assignedTo, staffName(c.assignedTo, allStaff));
+    m.delete(staff.email);
+    return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [team, cases, allStaff, staff.email]);
   const counts = useMemo(() => {
     const out: Record<string, number> = {
       all: filtered.length,
       active: 0,
       refunds: 0,
+      requests: 0,
     };
     for (const c of filtered) {
       if (refundDue(c)) out.refunds! += 1;
+      if (openRequests(c).length) out.requests! += 1;
       const b = caseBucket(c);
       out[b] = (out[b] ?? 0) + 1;
       if (ACTIVE.includes(b)) out.active! += 1;
@@ -184,9 +240,31 @@ export function ServicingPage({
       ? filtered
       : tab === "refunds"
         ? filtered.filter(refundDue)
-        : tab === "active"
-          ? filtered.filter((c) => ACTIVE.includes(caseBucket(c)))
-          : filtered.filter((c) => caseBucket(c) === tab);
+        : tab === "requests"
+          ? filtered
+              .filter((c) => openRequests(c).length)
+              .sort(
+                (a, b) =>
+                  (openRequests(b)[0]!.req.sentAt?.toMillis() ?? 0) -
+                  (openRequests(a)[0]!.req.sentAt?.toMillis() ?? 0),
+              )
+          : tab === "active"
+            ? filtered.filter((c) => ACTIVE.includes(caseBucket(c)))
+            : filtered.filter((c) => caseBucket(c) === tab);
+  const agingCounts = useMemo(() => {
+    const out: Record<AgingId, number> = { priority: 0, two: 0, one: 0, today: 0 };
+    for (const c of filtered) {
+      const a = agingOf(caseAgeDays(c, now));
+      if (a) out[a] += 1;
+    }
+    return out;
+  }, [filtered, now]);
+  // An aging tile narrows the list to those cases, oldest first.
+  const shown = aging
+    ? visible
+        .filter((c) => agingOf(caseAgeDays(c, now)) === aging)
+        .sort((a, b) => (caseAgeDays(b, now) ?? 0) - (caseAgeDays(a, now) ?? 0))
+    : visible;
   const open = cases.find((c) => c.id === openId) ?? null;
 
   return (
@@ -203,14 +281,16 @@ export function ServicingPage({
               arrive here when sales submits the Servicing form.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setCreating(true)}
-            className="inline-flex h-10 items-center gap-2 rounded-full bg-plum px-4 text-sm font-semibold text-milk hover:bg-plum-soft"
-          >
-            <Plus className="size-4" aria-hidden="true" />
-            New case
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setCreating(true)}
+              className="inline-flex h-10 items-center gap-2 rounded-full bg-plum px-4 text-sm font-semibold text-milk hover:bg-plum-soft"
+            >
+              <Plus className="size-4" aria-hidden="true" />
+              New case
+            </button>
+          </div>
         </div>
 
         {/* Pipeline */}
@@ -264,14 +344,38 @@ export function ServicingPage({
                 className="h-10 w-full rounded-full border border-line bg-white pl-10 pr-4 text-sm text-plum placeholder:text-muted/80 focus:border-plum focus:outline-none"
               />
             </label>
-            <label className="inline-flex h-10 items-center gap-2 rounded-full bg-white px-4 text-sm font-medium text-plum ring-1 ring-line">
-              <input
-                type="checkbox"
-                checked={mine}
-                onChange={(e) => setMine(e.target.checked)}
-                className="size-4 accent-plum"
-              />
-              Assigned to me
+            <label>
+              <span className="sr-only">Assigned to</span>
+              <select
+                value={assignee}
+                onChange={(e) => setAssignee(e.target.value)}
+                className="select-chevron h-10 rounded-full border border-line bg-white pl-4 text-sm font-medium text-plum focus:border-plum focus:outline-none"
+              >
+                <option value="all">All assignees</option>
+                <option value="me">Assigned to me</option>
+                <option value="none">Unassigned</option>
+                {assigneeOptions.map(([email, name]) => (
+                  <option key={email} value={email}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span className="sr-only">Nanny type</span>
+              <select
+                value={nannyType}
+                onChange={(e) => setNannyType(e.target.value)}
+                className="select-chevron h-10 rounded-full border border-line bg-white pl-4 text-sm font-medium text-plum focus:border-plum focus:outline-none"
+              >
+                <option value="all">All nanny types</option>
+                {FORM_CARE_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+                <option value="none">Type not set</option>
+              </select>
             </label>
           </div>
           <div
@@ -290,7 +394,7 @@ export function ServicingPage({
               >
                 {t.label}
                 <span
-                  className={`min-w-6 rounded-full px-1.5 py-0.5 text-xs tabular-nums ${tab === t.id ? "bg-milk/20 text-milk" : (t.id === "new" && counts.new) || (t.id === "form_pending" && counts.form_pending) || (t.id === "refunds" && counts.refunds) ? "bg-rose text-white" : "bg-beige text-muted"}`}
+                  className={`min-w-6 rounded-full px-1.5 py-0.5 text-xs tabular-nums ${tab === t.id ? "bg-milk/20 text-milk" : (t.id === "new" && counts.new) || (t.id === "form_pending" && counts.form_pending) || (t.id === "refunds" && counts.refunds) || (t.id === "requests" && counts.requests) ? "bg-rose text-white" : "bg-beige text-muted"}`}
                 >
                   {counts[t.id] ?? 0}
                 </span>
@@ -298,6 +402,35 @@ export function ServicingPage({
             ))}
           </div>
         </section>
+
+        <section aria-label="Aging" className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
+          {AGING_ORDER.map((id) => {
+            const m = AGING_META[id];
+            const on = aging === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                aria-pressed={on}
+                onClick={() => setAging(on ? null : id)}
+                className={`rounded-[18px] border px-4 py-3 text-left transition-shadow hover:shadow-soft ${m.tile} ${on ? "ring-2 ring-plum" : ""}`}
+              >
+                <span className={`block text-xs font-semibold ${m.text}`}>{m.label}</span>
+                <span className={`mt-0.5 block font-display text-2xl tabular-nums ${id === "priority" ? m.text : "text-plum"}`}>
+                  {agingCounts[id]}
+                </span>
+              </button>
+            );
+          })}
+        </section>
+        {aging && (
+          <p className="mt-2 flex items-center gap-2 text-xs text-muted">
+            Showing {AGING_META[aging].label.toLowerCase()} cases in this tab, oldest first.
+            <button type="button" onClick={() => setAging(null)} className="font-semibold text-rose-deep hover:underline">
+              Clear
+            </button>
+          </p>
+        )}
 
         {error && (
           <p
@@ -309,21 +442,36 @@ export function ServicingPage({
         )}
         {loading ? (
           <Empty>Loading cases…</Empty>
-        ) : !visible.length ? (
+        ) : !shown.length ? (
           <Empty>
             {cases.length
               ? "No cases here."
               : "No cases yet. They arrive when sales submits the Servicing form on a converted enquiry, or add one with “New case”."}
+            {tab === "requests" && cases.length
+              ? " Times customers suggest in the app to meet a nanny show up here."
+              : ""}
           </Empty>
         ) : (
           <ul className="mt-4 grid gap-2">
-            {visible.map((c) => (
+            {shown.map((c) => (
               <li key={c.id}>
                 <CaseRow
                   c={c}
                   now={now}
                   team={team}
+                  staff={staff}
                   onOpen={() => setOpenId(c.id)}
+                  onAssign={(email) =>
+                    demo
+                      ? undefined
+                      : void updateCase(
+                          c,
+                          { assignedTo: email },
+                          staff.email,
+                        ).catch(() =>
+                          alert("Couldn't assign the case. Try again."),
+                        )
+                  }
                 />
               </li>
             ))}
@@ -335,6 +483,7 @@ export function ServicingPage({
         <CaseDetail
           key={open.id}
           c={open}
+          people={allStaff}
           nannies={nannies}
           team={team}
           staff={staff}
@@ -342,6 +491,7 @@ export function ServicingPage({
           onClose={() => setOpenId(null)}
         />
       )}
+
       {creating && (
         <NewCasePanel
           staff={staff}
@@ -354,96 +504,255 @@ export function ServicingPage({
   );
 }
 
-function StagePill({ c }: { c: ServicingCase }) {
-  const m = bucketMeta(caseBucket(c));
-  return (
-    <span
-      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${m.tone}`}
-    >
-      <span className={`size-1.5 rounded-full ${m.dot}`} aria-hidden="true" />
-      {m.short}
-    </span>
-  );
+/** Soft tints for the customer initial, picked by name so a customer keeps hers. */
+const AVATAR_TONES = [
+  "bg-blush text-rose-deep",
+  "bg-[#ece6fb] text-[#5b3cc4]",
+  "bg-[#dcefe1] text-success",
+  "bg-[#fbecc8] text-[#7a5410]",
+  "bg-[#e3edfd] text-[#1a56c4]",
+  "bg-[#e0f2f1] text-[#0f6b63]",
+];
+function avatarTone(name: string) {
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return AVATAR_TONES[h % AVATAR_TONES.length]!;
 }
 
-/** What the team should do next, shown on the list. */
-function nextStep(c: ServicingCase, now: Date): string {
-  if (needsForm(c)) return "Waiting for the Servicing form";
-  if (c.stage === "cancelled") {
-    const r = c.cancellation?.refund;
-    if (!c.cancellation || !r) return "Cancelled";
-    const amt = r.amount !== null ? ` ${inr(r.amount)}` : "";
-    return `${c.cancellation.reason} · ${r.status === "pending" ? `Refund${amt} due` : r.status === "processed" ? `Refunded${amt}` : "No refund"}`;
-  }
-  if (c.stage === "placed" && c.placement)
-    return `${c.placement.nanny.name} since ${c.placement.startDate} · ${travelStatus(c.travel) ?? "Add travel details"}`;
-  if (c.stage === "approved")
-    return `Approved: ${c.proposals
-      .filter((p) => p.outcome === "approved")
-      .map((p) => p.nanny.name)
-      .join(", ")}. Place her.`;
-  const upcoming = c.proposals
-    .filter((p) => p.interviewAt && p.interviewStatus === "scheduled")
-    .sort((a, b) => a.interviewAt!.toMillis() - b.interviewAt!.toMillis())[0];
-  if (upcoming) {
-    const at = upcoming.interviewAt!.toDate();
-    return `${at < now ? "Interview to update" : "Interview"}: ${upcoming.nanny.name}, ${formatDateTime(at)}`;
-  }
-  if (c.stage === "profiles_shared")
-    return `${c.proposals.length} profile${c.proposals.length === 1 ? "" : "s"} shared · ${c.proposals.filter((p) => p.shortlisted).length} shortlisted`;
-  if (c.stage === "new") return "Pick nannies to share";
-  return "";
+/**
+ * The case's nanny type as one of FORM_CARE_TYPES (Servicing form first, then
+ * the case's own care type, e.g. "Live-In Nanny - baby 2 months+"), or "none".
+ */
+function caseNannyType(c: ServicingCase): string {
+  const t = (c.intake?.careType || c.careType || "").toLowerCase();
+  if (t.includes("japa")) return "Japa Nanny";
+  if (t.includes("live")) return "Live-In Nanny";
+  if (t.includes("day")) return "Day Nanny";
+  return "none";
+}
+
+/** "Live-In Nanny" → "Live-In" */
+const careChip = (t: string) =>
+  t
+    .replace(/\s+-\s.*$/, "")
+    .replace(/\s*\(.*\)$/, "")
+    .replace(/\s*(nanny|care)$/i, "")
+    .trim() || t;
+
+function Chip({ icon, children }: { icon: ReactNode; children: ReactNode }) {
+  return (
+    <span className="inline-flex max-w-full items-center gap-1 truncate rounded-full bg-white px-2 py-0.5 text-[0.7rem] text-plum ring-1 ring-line">
+      <span className="shrink-0 text-muted" aria-hidden="true">
+        {icon}
+      </span>
+      <span className="truncate">{children}</span>
+    </span>
+  );
 }
 
 function CaseRow({
   c,
   now,
   team,
+  staff,
   onOpen,
+  onAssign,
 }: {
   c: ServicingCase;
   now: Date;
   team: StaffMember[];
+  staff: Staff;
   onOpen: () => void;
+  onAssign: (email: string | null) => void;
 }) {
+  const stopped = c.stage === "on_hold" || c.stage === "cancelled";
+  const next = nextStep(c, now);
+  const name = c.customer.name || displayPhone(c.customer.phone);
+  const ageDays = caseAgeDays(c, now);
+  const age = agingOf(ageDays);
+  const r = c.intake;
+  const geo = r?.locationGeo;
+  const place =
+    (geo && [geo.area, geo.city].filter(Boolean).join(", ")) ||
+    r?.location ||
+    c.area ||
+    null;
+  const showAreaChip =
+    !!c.area && !(place ?? "").toLowerCase().includes(c.area.toLowerCase());
+  const people = [
+    ...team,
+    ...(team.some((t) => t.email === staff.email)
+      ? []
+      : [{ email: staff.email, name: staff.name, role: staff.role }]),
+  ];
+  const ic = "size-3";
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onOpen}
-      className="grid w-full gap-3 rounded-[18px] border border-line bg-paper p-4 text-left transition-shadow hover:shadow-soft md:grid-cols-[1.4fr_1fr_1.6fr_auto] md:items-center"
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      className={`block w-full cursor-pointer rounded-[18px] border border-line bg-paper p-4 text-left transition-shadow hover:shadow-soft focus-visible:outline-2 focus-visible:outline-plum ${age ? AGING_META[age].edge : ""}`}
     >
-      <div className="min-w-0">
-        <p className="truncate font-semibold text-plum">
-          {c.customer.name || displayPhone(c.customer.phone)}
-        </p>
-        <p className="truncate text-xs text-muted">
-          {caseRef(c)} · {displayPhone(c.customer.phone)}
-        </p>
-      </div>
-      <div className="min-w-0 text-sm text-plum">
-        <p className="truncate">
-          {[c.careType, c.area].filter(Boolean).join(" · ") || "—"}
-        </p>
-        <p className="text-xs text-muted">
-          Paid {inr(c.totalPaid)} · {formatReceived(toDate(c.createdAt), now)}
-        </p>
-        {c.intake && (
-          <p
-            className="truncate text-xs text-[#4a2fb0]"
-            title={requirementLine(c.intake)}
+      {/* Details | timeline | status side by side on wide screens; timeline below otherwise. */}
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-5 gap-y-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)_auto] xl:items-center">
+        <div className="flex min-w-0 gap-3">
+          <span
+            aria-hidden="true"
+            className={`grid size-11 shrink-0 place-items-center rounded-full font-display text-lg ${avatarTone(name)}`}
           >
-            {requirementLine(c.intake)}
-          </p>
-        )}
+            {name.trim().charAt(0).toUpperCase()}
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-plum">
+              <span className="font-semibold">{name}</span>
+              <span className="ml-2 text-xs text-muted">{caseRef(c)}</span>
+              {c.source === "manual" && c.leadSource && (
+                <span className="ml-2 text-xs text-muted">
+                  · {c.leadSource}
+                </span>
+              )}
+            </p>
+            <p className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-plum">
+              <span className="inline-flex items-center gap-1 tabular-nums">
+                <Phone className={`${ic} text-muted`} aria-hidden="true" />
+                {displayPhone(c.customer.phone)}
+              </span>
+              {place && (
+                <span
+                  className="inline-flex min-w-0 items-center gap-1"
+                  title={r?.location ?? place}
+                >
+                  <MapPin
+                    className={`${ic} shrink-0 text-muted`}
+                    aria-hidden="true"
+                  />
+                  <span className="truncate">{place}</span>
+                </span>
+              )}
+              <span className="text-muted">
+                {formatReceived(toDate(c.createdAt), now)}
+              </span>
+              {age && ageDays ? (
+                <span className={`font-semibold ${AGING_META[age].text}`}>
+                  {ageDays} day{ageDays === 1 ? "" : "s"} in servicing
+                </span>
+              ) : null}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {(r?.careType || c.careType) && (
+                <Chip icon={<Baby className={ic} />}>
+                  {careChip(r?.careType ?? c.careType!)}
+                </Chip>
+              )}
+              <Chip icon={<IndianRupee className={ic} />}>
+                {inr(c.totalPaid).replace("₹", "")}
+              </Chip>
+              {r?.joiningDate && (
+                <Chip icon={<CalendarDays className={ic} />}>
+                  Joins {formatDay(r.joiningDate)}
+                </Chip>
+              )}
+              {r?.nannyAge?.length ? (
+                <Chip icon={<User className={ic} />}>
+                  {r.nannyAge.join(", ")} yrs
+                </Chip>
+              ) : null}
+              {r?.languages?.length ? (
+                <Chip icon={<Languages className={ic} />}>
+                  {r.languages.join(", ")}
+                </Chip>
+              ) : null}
+              {showAreaChip && (
+                <Chip icon={<Home className={ic} />}>{c.area}</Chip>
+              )}
+            </div>
+            {openRequests(c).map(({ nannyId, proposal, req }) => (
+              <p
+                key={nannyId}
+                className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-[#fff6e5] px-2.5 py-1.5 text-xs text-plum ring-1 ring-[#f1d9a6]"
+              >
+                <CalendarClock
+                  className="size-3.5 shrink-0 text-[#9a6417]"
+                  aria-hidden="true"
+                />
+                <span>
+                  Wants to meet{" "}
+                  <span className="font-semibold">{proposal.nanny.name}</span> ·{" "}
+                  {requestWhen(req.at.toDate())}
+                </span>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[0.68rem] font-semibold ${REQUEST_META[req.status].tone}`}
+                >
+                  {REQUEST_META[req.status].label}
+                </span>
+                <span className="text-muted">
+                  {formatReceived(toDate(req.sentAt), now)}
+                </span>
+              </p>
+            ))}
+          </div>
+        </div>
+
+        <CaseProgress
+          c={c}
+          now={now}
+          className="order-last col-span-2 border-line pt-1 xl:order-none xl:col-span-1 xl:border-x xl:px-4"
+        />
+
+        <div className="flex flex-col items-end gap-1.5">
+          <StagePill c={c} />
+          <label
+            className="relative"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <span className="sr-only">Assigned to</span>
+            <select
+              value={c.assignedTo ?? ""}
+              onChange={(e) => onAssign(e.target.value || null)}
+              className={`h-8 max-w-[150px] cursor-pointer appearance-none truncate rounded-full bg-transparent pl-3 pr-7 text-right text-xs hover:bg-white hover:ring-1 hover:ring-line focus:bg-white focus:ring-1 focus:ring-line focus:outline-none ${c.assignedTo ? "text-plum" : "text-muted"}`}
+            >
+              <option value="">Unassigned</option>
+              {people.map((t) => (
+                <option key={t.email} value={t.email}>
+                  {t.name}
+                </option>
+              ))}
+              {c.assignedTo &&
+                !people.some((t) => t.email === c.assignedTo) && (
+                  <option value={c.assignedTo}>
+                    {staffName(c.assignedTo, team)}
+                  </option>
+                )}
+            </select>
+            <ChevronDown
+              className="pointer-events-none absolute right-2 top-1/2 size-3.5 -translate-y-1/2 text-muted"
+              aria-hidden="true"
+            />
+          </label>
+        </div>
       </div>
-      <p className="min-w-0 truncate text-xs text-plum">{nextStep(c, now)}</p>
-      <div className="flex items-center gap-2 md:flex-col md:items-end">
-        <StagePill c={c} />
-        <span className="text-xs text-muted">
-          {c.assignedTo ? staffName(c.assignedTo, team) : "Unassigned"}
-        </span>
-      </div>
-    </button>
+
+      {next && (
+        <p className="mt-3 flex items-center gap-1.5 border-t border-line pt-2 text-xs text-plum">
+          <ArrowRight
+            className="size-3.5 shrink-0 text-muted"
+            aria-hidden="true"
+          />
+          <span className="min-w-0 truncate">
+            {stopped || needsForm(c) ? "" : "Next: "}
+            {next}
+          </span>
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -451,6 +760,7 @@ function CaseRow({
 
 function CaseDetail({
   c,
+  people,
   nannies,
   team,
   staff,
@@ -458,6 +768,8 @@ function CaseDetail({
   onClose,
 }: {
   c: ServicingCase;
+  /** Everyone on staff, for showing who last changed something. */
+  people: StaffMember[];
   nannies: Nanny[];
   team: StaffMember[];
   staff: Staff;
@@ -469,9 +781,15 @@ function CaseDetail({
   const [copied, setCopied] = useState(false);
   // The Servicing form is the sales team's. Managers and admins can fill or fix it here.
   const canFillForm = staff.role === "manager" || staff.role === "admin";
+  // Once it's in, the servicing team can correct it too (the family changes a detail).
+  const canEditForm = canFillForm || staff.role === "servicing";
   const [cancelling, setCancelling] = useState(false);
   const [shareItems, setShareItems] = useState<ProfileItem[] | null>(null);
   const byId = useMemo(() => new Map(nannies.map((n) => [n.id, n])), [nannies]);
+  const sharedIds = useMemo(
+    () => new Set(c.proposals.map((p) => p.nannyId)),
+    [c.proposals],
+  );
 
   /** Every change saves straight away; the list updates live. */
   const run = async (fn: () => Promise<void>) => {
@@ -485,6 +803,25 @@ function CaseDetail({
           ? "You don't have permission to change this case."
           : "Couldn't save. Check your connection and try again.",
       );
+    } finally {
+      setBusy(false);
+    }
+  };
+  // Cashfree refunds (admins): show the server's message, success or not.
+  const [refundNotice, setRefundNotice] = useState<{
+    ok: boolean;
+    text: string;
+  } | null>(null);
+  const runCashfree = async (fn: () => Promise<string | null>) => {
+    setBusy(true);
+    setError(null);
+    setRefundNotice(null);
+    try {
+      if (demo) return;
+      const msg = await fn();
+      if (msg) setRefundNotice({ ok: true, text: msg });
+    } catch (e) {
+      setRefundNotice({ ok: false, text: (e as Error).message });
     } finally {
       setBusy(false);
     }
@@ -529,14 +866,19 @@ function CaseDetail({
           <span className="font-mono">{caseRef(c)}</span>
           <StagePill c={c} />
           <span>Opened {formatDateTime(toDate(c.createdAt))}</span>
-          {c.source === "manual" && <span>· added by hand</span>}
+          {c.source === "manual" && (
+            <span>· {c.leadSource ?? "Added by hand"}</span>
+          )}
         </div>
 
         {c.stage === "cancelled" && c.cancellation && (
           <RefundBox
             c={c}
             disabled={busy}
+            isAdmin={staff.role === "admin"}
             onSave={(refund) => run(() => updateRefund(c, refund, staff.email))}
+            onCashfree={(fn) => runCashfree(fn)}
+            notice={refundNotice}
           />
         )}
 
@@ -644,11 +986,12 @@ function CaseDetail({
         {c.intake && (
           <RequirementsBox
             intake={c.intake}
-            // The sales team owns the form; managers and admins can correct it.
+            people={people}
+            // Sales submits it; servicing, managers and admins can edit it here.
             onSave={
-              canFillForm
+              canEditForm
                 ? async (v) => {
-                    if (!demo) await saveIntake(c, v, staff.email);
+                    if (!demo) await saveIntake(c, v);
                   }
                 : undefined
             }
@@ -685,7 +1028,7 @@ function CaseDetail({
               })}
               submitLabel="Submit form"
               onSubmit={async (v) => {
-                if (!demo) await saveIntake(c, v, staff.email);
+                if (!demo) await saveIntake(c, v);
               }}
             />
           </Section>
@@ -740,9 +1083,24 @@ function CaseDetail({
                 {requirementLine(c.intake)}
               </p>
             )}
+            {c.intake && c.stage !== "placed" && (
+              <SuggestedNannies
+                intake={c.intake}
+                careType={c.careType}
+                nannies={nannies}
+                exclude={sharedIds}
+                disabled={busy}
+                onAdd={(picked) =>
+                  setProposals([
+                    ...c.proposals,
+                    ...picked.map((n) => newProposal(n, staff.email)),
+                  ])
+                }
+              />
+            )}
             <NannyPicker
               nannies={nannies}
-              exclude={new Set(c.proposals.map((p) => p.nannyId))}
+              exclude={sharedIds}
               careType={c.careType}
               onAdd={(picked) =>
                 setProposals([
@@ -767,6 +1125,27 @@ function CaseDetail({
                   <ProposalRow
                     key={p.nannyId}
                     p={p}
+                    request={
+                      openRequests(c).find((r) => r.nannyId === p.nannyId)
+                        ?.req ?? null
+                    }
+                    customer={c.customer}
+                    onRequest={async (action) => {
+                      if (demo) return;
+                      try {
+                        if (action === "confirm")
+                          await confirmRequest(c, p.nannyId, staff.email);
+                        else
+                          await setRequestStatus(
+                            c,
+                            p.nannyId,
+                            action,
+                            staff.email,
+                          );
+                      } catch {
+                        alert("Couldn't update the request. Try again.");
+                      }
+                    }}
                     current={byId.get(p.nannyId)}
                     placed={c.placement?.nannyId === p.nannyId}
                     disabled={busy}
@@ -805,8 +1184,19 @@ function CaseDetail({
               c={c}
               byId={byId}
               disabled={busy}
-              onPlace={(n, start, address) =>
-                run(() => placeNanny(c, n, start, address, staff.email))
+              onPlace={(n, start) =>
+                run(() =>
+                  placeNanny(
+                    c,
+                    n,
+                    start,
+                    c.intake?.location ?? "",
+                    staff.email,
+                  ),
+                )
+              }
+              onReplace={(reason) =>
+                run(() => replacePlacement(c, reason, staff.email))
               }
               onUndo={() => run(() => unplace(c, staff.email))}
             />
@@ -845,7 +1235,7 @@ function CaseDetail({
           </Section>
         </div>
 
-        <NotesBox caseId={c.id} staff={staff} demo={demo} />
+        <NotesBox caseId={c.id} staff={staff} people={people} demo={demo} />
 
         {/* Hold / cancel */}
         {cancelling ? (
@@ -866,6 +1256,18 @@ function CaseDetail({
               type="button"
               disabled={busy}
               onClick={async () => {
+                if (
+                  c.cancellation &&
+                  liveCfRefunds(c.cancellation.refund).length
+                ) {
+                  await confirmDialog({
+                    title: "Can't reopen this case",
+                    message:
+                      "A refund has been sent to Cashfree for this case. Open a new case for the customer instead.",
+                    confirmLabel: "OK",
+                  });
+                  return;
+                }
                 if (
                   c.cancellation?.refund.status === "processed" &&
                   !(await confirmDialog({
@@ -909,6 +1311,7 @@ function CaseDetail({
           {busy && <span className="text-xs text-muted">Saving…</span>}
           {error && <span className="text-xs text-red-700">{error}</span>}
         </div>
+        <UpdatedBy by={c.updatedBy} at={toDate(c.updatedAt)} people={people} />
       </div>
       {shareItems && (
         <ProfileShareDialog
@@ -923,59 +1326,24 @@ function CaseDetail({
 }
 
 /** "Day Nanny · joins 20 Nov · 30-40 yrs · Hindi, Kannada · 9 Hrs from 09:00 · ISRO Layout" */
-function requirementLine(r: Intake) {
-  return [
-    r.careType,
-    r.joiningDate ? `joins ${formatDay(r.joiningDate)}` : null,
-    r.nannyAge?.length ? `${r.nannyAge.join(", ")} yrs` : null,
-    r.languages?.length ? r.languages.join(", ") : null,
-    r.workingHours
-      ? `${r.workingHours}${r.startTime ? ` from ${formatTime(r.startTime)}` : ""}`
-      : null,
-    r.location || null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-}
-
-const MONTHS = [
-  "Jan",
-  "Feb",
-  "Mar",
-  "Apr",
-  "May",
-  "Jun",
-  "Jul",
-  "Aug",
-  "Sep",
-  "Oct",
-  "Nov",
-  "Dec",
-];
-/** "2026-11-20" → "20 Nov 2026" */
-function formatDay(ymd: string) {
-  const [y, m, d] = ymd.split("-").map(Number);
-  return y && m && d ? `${d} ${MONTHS[m - 1]} ${y}` : ymd;
-}
-/** "14:30" → "2:30 PM" */
-function formatTime(hm: string) {
-  const [h, m] = hm.split(":").map(Number);
-  if (h === undefined || m === undefined || Number.isNaN(h)) return hm;
-  return `${h % 12 || 12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
-}
-
 /**
  * Everything the sales team recorded in the Servicing form, laid out for the
  * servicing team to match a nanny. Editable (e.g. the family changes a detail).
  */
 function RequirementsBox({
   intake,
+  people,
   onSave,
 }: {
   intake: Intake;
-  /** Missing for the servicing team: the form is the sales team's (read-only here). */
+  people: StaffMember[];
+  /** Missing when this person can't edit the form (read-only). */
   onSave?: (v: ServicingFormValue) => Promise<void>;
 }) {
+  const edited =
+    intake.editedAt instanceof Date
+      ? intake.editedAt
+      : (intake.editedAt?.toDate?.() ?? null);
   const [editing, setEditing] = useState(false);
   const at =
     intake.submittedAt instanceof Date
@@ -1047,7 +1415,7 @@ function RequirementsBox({
   return (
     <Section
       title="Requirements"
-      hint={`From the Servicing form${at ? `, ${formatDateTime(at)}` : ""}${intake.submittedBy ? ` by ${intake.submittedBy}` : ""}.`}
+      hint={`From the Servicing form, submitted${at ? ` ${formatDateTime(at)}` : ""}${intake.submittedBy ? ` by ${staffName(intake.submittedBy, people)}` : ""}.`}
       action={
         onSave && (
           <button
@@ -1082,6 +1450,13 @@ function RequirementsBox({
           </p>
         </div>
       )}
+      <UpdatedBy
+        by={intake.editedBy}
+        at={edited}
+        people={people}
+        label="Last edited by"
+        className="mt-3"
+      />
     </Section>
   );
 }
@@ -1145,12 +1520,20 @@ function NannyPicker({
   careType,
   onAdd,
   disabled,
+  single = false,
+  tags,
+  placeholder = "Select nannies to share…",
 }: {
   nannies: Nanny[];
   exclude: Set<string>;
   careType: string | null;
   onAdd: (n: Nanny[]) => void;
   disabled: boolean;
+  /** Pick one nanny: choosing her calls onAdd straight away. */
+  single?: boolean;
+  /** Labels such as "Approved" for nannies to list first. */
+  tags?: Map<string, string>;
+  placeholder?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -1197,15 +1580,24 @@ function NannyPicker({
               : n.workType !== "live_in"
             : true;
         return (
+          Number(!!tags?.has(b.id)) - Number(!!tags?.has(a.id)) ||
           Number(fit(b)) - Number(fit(a)) ||
           Number(b.status === "available") - Number(a.status === "available") ||
           a.name.localeCompare(b.name)
         );
       });
-  }, [nannies, exclude, q, showAll, careType, wantsLiveIn]);
+  }, [nannies, exclude, q, showAll, careType, wantsLiveIn, tags]);
 
-  const toggle = (id: string) =>
+  const toggle = (id: string) => {
+    if (single) {
+      const n = nannies.find((x) => x.id === id);
+      if (n) onAdd([n]);
+      setOpen(false);
+      setQ("");
+      return;
+    }
     setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+  };
 
   return (
     <div ref={root} className="relative">
@@ -1220,26 +1612,28 @@ function NannyPicker({
           <span className={picked.length ? "font-semibold" : "text-muted"}>
             {picked.length
               ? `${picked.length} selected: ${picked.map((id) => nannies.find((n) => n.id === id)?.name).join(", ")}`
-              : "Select nannies to share…"}
+              : placeholder}
           </span>
           <Plus className="size-4 shrink-0 text-muted" aria-hidden="true" />
         </button>
-        <button
-          type="button"
-          disabled={!picked.length || disabled}
-          onClick={() => {
-            onAdd(
-              picked
-                .map((id) => nannies.find((n) => n.id === id)!)
-                .filter(Boolean),
-            );
-            setPicked([]);
-            setOpen(false);
-          }}
-          className="h-11 rounded-xl bg-plum px-4 text-sm font-semibold text-milk disabled:opacity-40"
-        >
-          Add {picked.length || ""}
-        </button>
+        {!single && (
+          <button
+            type="button"
+            disabled={!picked.length || disabled}
+            onClick={() => {
+              onAdd(
+                picked
+                  .map((id) => nannies.find((n) => n.id === id)!)
+                  .filter(Boolean),
+              );
+              setPicked([]);
+              setOpen(false);
+            }}
+            className="h-11 rounded-xl bg-plum px-4 text-sm font-semibold text-milk disabled:opacity-40"
+          >
+            Add {picked.length || ""}
+          </button>
+        )}
       </div>
       {open && (
         <div className="absolute inset-x-0 z-20 mt-1.5 overflow-hidden rounded-xl border border-line bg-white shadow-lift">
@@ -1252,19 +1646,21 @@ function NannyPicker({
               placeholder="Name, area, city, language, skill"
               className="h-9 flex-1 bg-transparent text-sm text-plum outline-none"
             />
-            <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted">
-              <input
-                type="checkbox"
-                checked={showAll}
-                onChange={(e) => setShowAll(e.target.checked)}
-                className="size-3.5 accent-plum"
-              />
-              Include placed / on leave
-            </label>
+            {!single && (
+              <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted">
+                <input
+                  type="checkbox"
+                  checked={showAll}
+                  onChange={(e) => setShowAll(e.target.checked)}
+                  className="size-3.5 accent-plum"
+                />
+                Include placed / on leave
+              </label>
+            )}
           </div>
           <ul
             role="listbox"
-            aria-multiselectable="true"
+            aria-multiselectable={!single}
             className="max-h-[320px] overflow-y-auto py-1"
           >
             {!options.length && (
@@ -1282,11 +1678,13 @@ function NannyPicker({
                   onClick={() => toggle(n.id)}
                   className={`flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-milk ${on ? "bg-milk/70" : ""}`}
                 >
-                  <span
-                    className={`grid size-5 shrink-0 place-items-center rounded border ${on ? "border-plum bg-plum text-milk" : "border-line bg-white"}`}
-                  >
-                    {on && <Check className="size-3.5" aria-hidden="true" />}
-                  </span>
+                  {!single && (
+                    <span
+                      className={`grid size-5 shrink-0 place-items-center rounded border ${on ? "border-plum bg-plum text-milk" : "border-line bg-white"}`}
+                    >
+                      {on && <Check className="size-3.5" aria-hidden="true" />}
+                    </span>
+                  )}
                   <NannyAvatar name={n.name} photoUrl={n.photoUrl} size={34} />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-semibold text-plum">
@@ -1307,6 +1705,11 @@ function NannyPicker({
                         .join(" · ")}
                     </p>
                   </div>
+                  {tags?.get(n.id) && (
+                    <span className="shrink-0 rounded-full bg-[#dcefe1] px-2 py-0.5 text-[0.68rem] font-semibold text-success">
+                      {tags.get(n.id)}
+                    </span>
+                  )}
                   <span
                     className={`shrink-0 rounded-full px-2 py-0.5 text-[0.68rem] font-semibold ${NANNY_STATUS_META[n.status].tone}`}
                   >
@@ -1326,6 +1729,9 @@ function NannyPicker({
 
 function ProposalRow({
   p,
+  request,
+  customer,
+  onRequest,
   current,
   placed,
   disabled,
@@ -1334,6 +1740,12 @@ function ProposalRow({
   onRemove,
 }: {
   p: Proposal;
+  /** An open request from the customer app to meet her, if any. */
+  request: InterviewRequest | null;
+  customer: ServicingCase["customer"];
+  onRequest: (
+    action: "confirm" | "checking" | "unavailable" | "new",
+  ) => Promise<void>;
   current: Nanny | undefined;
   placed: boolean;
   disabled: boolean;
@@ -1425,6 +1837,16 @@ function ProposalRow({
             <p className="text-xs tabular-nums text-muted">
               Nanny: {displayPhone(current.phone)}
             </p>
+          )}
+
+          {request && (
+            <RequestCard
+              request={request}
+              nannyName={p.nanny.name}
+              customer={customer}
+              disabled={disabled}
+              onRequest={onRequest}
+            />
           )}
 
           <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
@@ -1534,139 +1956,319 @@ function ProposalRow({
 
 /* ---- step 3 ---- */
 
+/** The time the customer suggested in the app to meet this nanny. */
+function RequestCard({
+  request,
+  nannyName,
+  customer,
+  disabled,
+  onRequest,
+}: {
+  request: InterviewRequest;
+  nannyName: string;
+  customer: ServicingCase["customer"];
+  disabled: boolean;
+  onRequest: (
+    action: "confirm" | "checking" | "unavailable" | "new",
+  ) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const at = request.at.toDate();
+  const when = requestWhen(at);
+  // When the drawer opened is close enough for "has this time passed?".
+  const [openedAt] = useState(() => Date.now());
+  const passed = at.getTime() < openedAt;
+  const first = (customer.name ?? "").trim().split(/\s+/)[0] || "there";
+  const run = async (a: Parameters<typeof onRequest>[0]) => {
+    setBusy(true);
+    await onRequest(a);
+    setBusy(false);
+  };
+  const off = disabled || busy;
+  const btn =
+    "inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-semibold disabled:opacity-40";
+  return (
+    <div className="mt-3 rounded-xl bg-[#fff6e5] p-3 ring-1 ring-[#f1d9a6]">
+      <div className="flex flex-wrap items-center gap-2 text-sm text-plum">
+        <CalendarClock
+          className="size-4 shrink-0 text-[#9a6417]"
+          aria-hidden="true"
+        />
+        <span>
+          Customer suggested <span className="font-semibold">{when}</span>
+          {passed && <span className="text-red-700"> (time has passed)</span>}
+        </span>
+        <span
+          className={`rounded-full px-2 py-0.5 text-[0.68rem] font-semibold ${REQUEST_META[request.status].tone}`}
+        >
+          {REQUEST_META[request.status].label}
+        </span>
+        <span className="text-xs text-muted">
+          sent {formatReceived(toDate(request.sentAt))}
+        </span>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={off || passed}
+          onClick={() => void run("confirm")}
+          className={`${btn} bg-[#3f8a57] text-white hover:bg-[#357549]`}
+        >
+          <Check className="size-3.5" aria-hidden="true" /> Confirm this time
+        </button>
+        {request.status === "new" && (
+          <button
+            type="button"
+            disabled={off}
+            onClick={() => void run("checking")}
+            className={`${btn} bg-white text-plum ring-1 ring-line hover:bg-milk`}
+          >
+            Checking with nanny
+          </button>
+        )}
+        {request.status !== "unavailable" && (
+          <button
+            type="button"
+            disabled={off}
+            onClick={() => void run("unavailable")}
+            className={`${btn} bg-white text-plum ring-1 ring-line hover:bg-milk`}
+          >
+            She isn&apos;t free then
+          </button>
+        )}
+        <a
+          href={whatsappLink(
+            customer.phone,
+            `Hi ${first}, thanks for choosing a time to meet ${nannyName}. She isn't free on ${when}. Would ___ work for you instead?`,
+          )}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={`${btn} bg-white text-[#1a7f45] ring-1 ring-line hover:bg-[#e7f6ec]`}
+        >
+          <MessageCircle className="size-3.5" aria-hidden="true" /> Suggest
+          other
+        </a>
+      </div>
+      <p className="mt-1.5 text-xs text-muted">
+        Confirm books the interview at this time; the customer&apos;s app then
+        shows it as scheduled. &ldquo;She isn&apos;t free then&rdquo; asks the
+        customer in the app to pick another time.
+      </p>
+    </div>
+  );
+}
+
 function PlacementBox({
   c,
   byId,
   disabled,
   onPlace,
+  onReplace,
   onUndo,
 }: {
   c: ServicingCase;
   byId: Map<string, Nanny>;
   disabled: boolean;
-  onPlace: (n: Nanny, startDate: string, address: string) => void;
+  onPlace: (n: Nanny, startDate: string) => void;
+  onReplace: (reason: string) => void;
   onUndo: () => void;
 }) {
   const approved = c.proposals.filter((p) => p.outcome === "approved");
-  const [nannyId, setNannyId] = useState(approved[0]?.nannyId ?? "");
   const [start, setStart] = useState(localISODate(new Date()));
-  const [address, setAddress] = useState(c.placement?.siteAddress ?? "");
-  const [changing, setChanging] = useState(false);
+  const [replacing, setReplacing] = useState(false);
+  const [reason, setReason] = useState("");
+  const history = [...c.placementHistory].reverse();
+  const pl = c.placement;
 
-  if (c.placement && !changing) {
-    const pl = c.placement;
-    return (
-      <div className="flex flex-wrap items-center gap-3 rounded-xl bg-white p-3 ring-1 ring-line">
-        <NannyAvatar
-          name={pl.nanny.name}
-          photoUrl={pl.nanny.photoUrl}
-          size={44}
-        />
-        <div className="min-w-0 flex-1">
-          <p className="font-semibold text-plum">{pl.nanny.name}</p>
-          <p className="text-xs text-muted">
-            Started {pl.startDate}
-            {pl.siteAddress ? ` · ${pl.siteAddress}` : ""}
-          </p>
-          <p className="text-xs text-muted">
-            {c.bookingId
-              ? "Shown in the customer app."
-              : "Will show in the customer app once it reads servicing cases."}
-          </p>
-        </div>
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => setChanging(true)}
-          className="h-9 rounded-full bg-white px-3.5 text-sm font-semibold text-plum ring-1 ring-line"
-        >
-          Replace nanny
-        </button>
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={async () =>
-            (await confirmDialog({
-              title: `Undo ${pl.nanny.name}'s placement?`,
-              message:
-                "She becomes available again, and any travel details on this case are cleared.",
-              confirmLabel: "Undo placement",
-              danger: true,
-            })) && onUndo()
-          }
-          className="h-9 rounded-full px-3 text-sm font-semibold text-red-700 hover:bg-red-50"
-        >
-          Undo
-        </button>
-      </div>
-    );
-  }
-
-  const candidates = (changing ? c.proposals : approved).filter(
-    (p) => p.nannyId !== c.placement?.nannyId,
-  );
-  if (!candidates.length)
-    return (
-      <p className="text-sm text-muted">
-        Mark a nanny as “Customer approved” in step 2 to place her.
-      </p>
-    );
-  const chosen = byId.get(nannyId) ?? byId.get(candidates[0]!.nannyId);
   return (
-    <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-      <select
-        value={chosen?.id ?? ""}
-        onChange={(e) => setNannyId(e.target.value)}
-        aria-label="Nanny to place"
-        className="h-10 rounded-lg border border-line bg-white px-2 text-sm text-plum"
-      >
-        {candidates.map((p) => (
-          <option key={p.nannyId} value={p.nannyId}>
-            {p.nanny.name}
-            {p.outcome === "approved" ? " (approved)" : ""}
-          </option>
-        ))}
-      </select>
-      <input
-        type="date"
-        aria-label="Start date"
-        value={start}
-        onChange={(e) => setStart(e.target.value)}
-        className="h-10 rounded-lg border border-line bg-white px-2 text-sm text-plum"
-      />
-      <input
-        value={address}
-        onChange={(e) => setAddress(e.target.value)}
-        placeholder="Site address (where she'll work)"
-        className="h-10 rounded-lg border border-line bg-white px-3 text-sm text-plum sm:col-span-2"
-      />
-      {!chosen && (
-        <p className="text-xs text-red-700 sm:col-span-2">
-          This nanny isn&apos;t in the nanny list any more.
+    <div className="space-y-3">
+      {pl ? (
+        <div className="rounded-xl bg-white p-3 ring-1 ring-line">
+          <div className="flex flex-wrap items-center gap-3">
+            <NannyAvatar
+              name={pl.nanny.name}
+              photoUrl={pl.nanny.photoUrl}
+              size={44}
+            />
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold text-plum">
+                {pl.nanny.name}
+                {history.length > 0 && (
+                  <span className="ml-2 rounded-full bg-[#dcefe1] px-2 py-0.5 align-middle text-[0.68rem] font-semibold text-success">
+                    Current · replacement {history.length}
+                  </span>
+                )}
+              </p>
+              <p className="text-xs text-muted">
+                Started {pl.startDate}
+                {pl.siteAddress ? ` · ${pl.siteAddress}` : ""}
+              </p>
+            </div>
+            {!replacing && (
+              <>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => {
+                    setReason("");
+                    setReplacing(true);
+                  }}
+                  className="h-9 rounded-full bg-white px-3.5 text-sm font-semibold text-plum ring-1 ring-line"
+                >
+                  Replace nanny
+                </button>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={async () =>
+                    (await confirmDialog({
+                      title: `Undo ${pl.nanny.name}'s placement?`,
+                      message:
+                        "Use this if she was placed by mistake: she becomes available again and isn't kept in the history. To swap her for someone else, use Replace nanny.",
+                      confirmLabel: "Undo placement",
+                      danger: true,
+                    })) && onUndo()
+                  }
+                  className="h-9 rounded-full px-3 text-sm font-semibold text-red-700 hover:bg-red-50"
+                >
+                  Undo
+                </button>
+              </>
+            )}
+          </div>
+          {replacing && (
+            <div className="mt-3 grid gap-2 border-t border-line pt-3">
+              <p className="text-sm text-plum">
+                {pl.nanny.name} moves to “Earlier on this case”, becomes
+                available again and leaves the shortlist. The case goes back to
+                step 2 to interview and place a new nanny.
+              </p>
+              <input
+                autoFocus
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                maxLength={200}
+                placeholder={`Why is ${pl.nanny.name.split(" ")[0]} being replaced? (optional)`}
+                className="h-10 rounded-lg border border-line bg-white px-3 text-sm text-plum"
+              />
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => {
+                    onReplace(reason);
+                    setReplacing(false);
+                  }}
+                  className="h-10 flex-1 rounded-full bg-plum px-4 text-sm font-semibold text-milk disabled:opacity-50"
+                >
+                  Replace {pl.nanny.name.split(" ")[0]} and restart interviews
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReplacing(false)}
+                  className="h-10 rounded-full px-4 text-sm font-semibold text-plum"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : approved.length ? (
+        <div className="grid gap-2">
+          <label className="flex flex-wrap items-center gap-2 text-xs font-semibold text-muted">
+            Start date
+            <input
+              type="date"
+              value={start}
+              onChange={(e) => setStart(e.target.value)}
+              className="h-10 rounded-lg border border-line bg-white px-2 text-sm font-normal text-plum"
+            />
+          </label>
+          {approved.map((p) => {
+            const n = byId.get(p.nannyId);
+            return (
+              <div
+                key={p.nannyId}
+                className="flex flex-wrap items-center gap-3 rounded-xl bg-white p-3 ring-1 ring-line"
+              >
+                <NannyAvatar
+                  name={p.nanny.name}
+                  photoUrl={p.nanny.photoUrl}
+                  size={36}
+                />
+                <p className="min-w-0 flex-1 text-sm font-semibold text-plum">
+                  {p.nanny.name}
+                  <span className="ml-2 text-xs font-normal text-success">
+                    Customer approved
+                  </span>
+                  {!n && (
+                    <span className="block text-xs font-normal text-red-700">
+                      Not in the nanny list any more.
+                    </span>
+                  )}
+                </p>
+                <button
+                  type="button"
+                  disabled={disabled || !n || !start}
+                  onClick={() => n && onPlace(n, start)}
+                  className="h-9 rounded-full bg-success px-4 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  Place her from {start}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="text-sm text-muted">
+          {history.length
+            ? "Interview new nannies in step 2 and mark one “Customer approved” to place her."
+            : "Mark a nanny as “Customer approved” in step 2 to place her."}
         </p>
       )}
-      <div className="flex gap-2 sm:col-span-2">
-        <button
-          type="button"
-          disabled={disabled || !chosen || !start}
-          onClick={() => {
-            if (chosen) onPlace(chosen, start, address);
-            setChanging(false);
-          }}
-          className="h-10 flex-1 rounded-full bg-success px-4 text-sm font-semibold text-white disabled:opacity-50"
-        >
-          Place {chosen?.name ?? "nanny"} on {start}
-        </button>
-        {changing && (
-          <button
-            type="button"
-            onClick={() => setChanging(false)}
-            className="h-10 rounded-full px-4 text-sm font-semibold text-plum"
-          >
-            Cancel
-          </button>
-        )}
-      </div>
+
+      {history.length > 0 && (
+        <div>
+          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
+            Earlier on this case
+          </p>
+          <ul className="space-y-1.5">
+            {history.map((h, i) => (
+              <li
+                key={`${h.nannyId}-${i}`}
+                className="flex items-center gap-3 rounded-xl bg-paper p-2.5 ring-1 ring-line"
+              >
+                <NannyAvatar
+                  name={h.nanny.name}
+                  photoUrl={h.nanny.photoUrl}
+                  size={32}
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-plum">
+                    {h.nanny.name}
+                    <span className="ml-2 text-xs font-normal text-muted">
+                      {history.length - i === 1
+                        ? "First placed"
+                        : `Replacement ${history.length - i - 1}`}
+                    </span>
+                  </p>
+                  <p className="text-xs text-muted">
+                    From {h.startDate}
+                    {h.endedAt
+                      ? ` · replaced ${formatDateTime(h.endedAt.toDate())}`
+                      : ""}
+                    {h.endedBy ? ` by ${h.endedBy.split("@")[0]}` : ""}
+                  </p>
+                  {h.endReason && (
+                    <p className="text-xs text-plum">Reason: {h.endReason}</p>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
@@ -2149,14 +2751,22 @@ function CancelForm({
 function RefundBox({
   c,
   disabled,
+  isAdmin,
   onSave,
+  onCashfree,
+  notice,
 }: {
   c: ServicingCase;
   disabled: boolean;
+  isAdmin: boolean;
   onSave: (r: Omit<Refund, "updatedBy">) => void;
+  onCashfree: (fn: () => Promise<string | null>) => void;
+  notice: { ok: boolean; text: string } | null;
 }) {
   const cx = c.cancellation!;
   const r = cx.refund;
+  const cfLive = liveCfRefunds(r);
+  const viaCashfree = (r.cashfree ?? []).length > 0;
   const [amount, setAmount] = useState(
     r.amount !== null ? String(r.amount) : String(c.totalPaid || ""),
   );
@@ -2191,6 +2801,23 @@ function RefundBox({
         </span>
       </div>
 
+      {(isAdmin || viaCashfree) &&
+        (r.status === "pending" || r.status === "initiated" || viaCashfree) && (
+          <CashfreeRefunds
+            c={c}
+            disabled={disabled}
+            isAdmin={isAdmin}
+            onCashfree={onCashfree}
+          />
+        )}
+      {notice && (
+        <p
+          className={`mt-2 text-xs ${notice.ok ? "text-success" : "text-red-700"}`}
+        >
+          {notice.text}
+        </p>
+      )}
+
       {r.status === "processed" ? (
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white p-3 text-sm ring-1 ring-line">
           <p className="text-plum">
@@ -2208,21 +2835,26 @@ function RefundBox({
               <span className="block text-xs text-muted">{r.note}</span>
             ) : null}
           </p>
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() =>
-              onSave({ ...r, status: "pending", refundedAt: null })
-            }
-            className="h-8 rounded-full px-3 text-xs font-semibold text-muted hover:text-plum"
-          >
-            Undo
-          </button>
+          {!cfLive.length && (
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() =>
+                onSave({ ...r, status: "pending", refundedAt: null })
+              }
+              className="h-8 rounded-full px-3 text-xs font-semibold text-muted hover:text-plum"
+            >
+              Undo
+            </button>
+          )}
         </div>
-      ) : r.status === "pending" ? (
+      ) : r.status === "initiated" ? null : r.status === "pending" &&
+        cfLive.length ? null : r.status === "pending" ? (
         <div className="mt-3 rounded-xl bg-white p-3 ring-1 ring-line">
           <p className="text-xs text-muted">
-            Refund it in Cashfree (admin), then record it here.
+            {isAdmin
+              ? "Refunded another way (bank transfer, or a payment outside Cashfree)? Record it here."
+              : "An admin starts the refund from here. If it was refunded another way, record it here."}
           </p>
           <div className="mt-2 grid gap-2 sm:grid-cols-3">
             <label className="text-xs text-muted">
@@ -2323,18 +2955,221 @@ function RefundBox({
   );
 }
 
+/** Refunds sent through Cashfree from this case; admins can start one. */
+function CashfreeRefunds({
+  c,
+  disabled,
+  isAdmin,
+  onCashfree,
+}: {
+  c: ServicingCase;
+  disabled: boolean;
+  isAdmin: boolean;
+  onCashfree: (fn: () => Promise<string | null>) => void;
+}) {
+  const r = c.cancellation!.refund;
+  const list = r.cashfree ?? [];
+  const live = liveCfRefunds(r);
+  const owed = r.amount ?? c.totalPaid;
+  const remaining = Math.max(
+    0,
+    Math.round((owed - live.reduce((t, e) => t + e.amount, 0)) * 100) / 100,
+  );
+  const payable = c.payments
+    .filter((p) => p.orderId && p.orderId !== "manual")
+    .map((p) => ({
+      ...p,
+      left:
+        Math.round(
+          (p.amount -
+            live
+              .filter((e) => e.orderId === p.orderId)
+              .reduce((t, e) => t + e.amount, 0)) *
+            100,
+        ) / 100,
+    }))
+    .filter((p) => p.left > 0);
+  const [orderId, setOrderId] = useState(payable[0]?.orderId ?? "");
+  const pay = payable.find((p) => p.orderId === orderId) ?? payable[0];
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState(c.cancellation!.reason);
+  const max = pay ? Math.min(remaining, pay.left) : 0;
+  const amt = amount === "" ? max : Number(amount);
+  const amountOk = Number.isFinite(amt) && amt > 0 && amt <= max;
+  const anyOpen = list.some((e) =>
+    ["CREATING", "PENDING", "ONHOLD"].includes(e.status),
+  );
+  const creating = list.some((e) => e.status === "CREATING");
+  const canStart =
+    isAdmin && r.status === "pending" && remaining > 0 && !creating;
+
+  return (
+    <div className="mt-3 rounded-xl bg-white p-3 ring-1 ring-line">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h4 className="text-xs font-bold uppercase tracking-wide text-muted">
+          Cashfree refund
+        </h4>
+        {isAdmin && anyOpen && (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => onCashfree(() => syncCaseRefund(c))}
+            className="h-8 rounded-full bg-white px-3 text-xs font-semibold text-plum ring-1 ring-line disabled:opacity-40"
+          >
+            Check status
+          </button>
+        )}
+      </div>
+
+      {list.length > 0 && (
+        <ul className="mt-2 space-y-2">
+          {list.map((e) => (
+            <li
+              key={e.refundId}
+              className="flex flex-wrap items-start justify-between gap-2 rounded-lg bg-paper px-3 py-2 text-sm"
+            >
+              <div>
+                <p className="font-semibold tabular-nums text-plum">
+                  {inr(e.amount)}{" "}
+                  <span className="font-mono text-xs font-normal text-muted">
+                    {e.refundId}
+                  </span>
+                </p>
+                <p className="text-xs text-muted">
+                  {formatDateTime(new Date(e.createdAt))} by {e.createdBy}
+                  {e.cfRefundId ? ` · Cashfree ${e.cfRefundId}` : ""}
+                  {e.arn ? ` · ARN ${e.arn}` : ""}
+                </p>
+                {e.error && <p className="text-xs text-red-700">{e.error}</p>}
+              </div>
+              <span
+                className={`rounded-full px-2.5 py-1 text-xs font-semibold ${CF_REFUND_META[e.status].tone}`}
+              >
+                {CF_REFUND_META[e.status].label}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {!isAdmin && r.status === "pending" && !list.length && (
+        <p className="mt-1 text-xs text-muted">
+          Only an admin can start a refund.
+        </p>
+      )}
+
+      {canStart &&
+        (payable.length ? (
+          <>
+            <p className="mt-2 text-xs text-muted">
+              {remaining < owed
+                ? `${inr(remaining)} still owed of ${inr(owed)}.`
+                : `${inr(owed)} owed.`}{" "}
+              The money goes back to the customer&apos;s original payment
+              method, usually in 5–7 working days.
+            </p>
+            <div className="mt-2 grid gap-2 sm:grid-cols-3">
+              <label className="text-xs text-muted">
+                From payment
+                <select
+                  value={pay?.orderId ?? ""}
+                  onChange={(e) => {
+                    setOrderId(e.target.value);
+                    setAmount("");
+                  }}
+                  className="mt-1 h-9 w-full rounded-lg border border-line bg-white px-2 text-sm text-plum"
+                >
+                  {payable.map((p) => (
+                    <option key={p.orderId} value={p.orderId}>
+                      {inr(p.amount)}
+                      {p.paidAt
+                        ? ` · ${formatDateTime(new Date(p.paidAt)).split(",")[0]}`
+                        : ""}
+                      {p.left < p.amount ? ` (${inr(p.left)} left)` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-muted">
+                Amount ₹
+                <input
+                  inputMode="decimal"
+                  value={amount === "" ? String(max) : amount}
+                  onChange={(e) =>
+                    setAmount(e.target.value.replace(/[^\d.]/g, ""))
+                  }
+                  className="mt-1 h-9 w-full rounded-lg border border-line bg-white px-2 text-sm tabular-nums text-plum"
+                />
+              </label>
+              <label className="text-xs text-muted">
+                Note (sent to Cashfree)
+                <input
+                  value={note}
+                  maxLength={100}
+                  onChange={(e) => setNote(e.target.value)}
+                  className="mt-1 h-9 w-full rounded-lg border border-line bg-white px-2 text-sm text-plum"
+                />
+              </label>
+            </div>
+            {!amountOk && (
+              <p className="mt-1 text-xs text-red-700">
+                Enter an amount up to {inr(max)}.
+              </p>
+            )}
+            <button
+              type="button"
+              disabled={disabled || !amountOk || !pay}
+              onClick={async () => {
+                if (!pay) return;
+                const value = Math.round(amt * 100) / 100;
+                const ok = await confirmDialog({
+                  title: `Refund ${inr(value)} to ${c.customer.name || "this customer"}?`,
+                  message: `Cashfree sends ${inr(value)} back to the customer's original payment method (order ${pay.orderId}). This can't be undone once Cashfree processes it.`,
+                  confirmLabel: `Refund ${inr(value)}`,
+                });
+                if (ok)
+                  onCashfree(() =>
+                    initiateCaseRefund(c, {
+                      orderId: pay.orderId,
+                      amount: value,
+                      note,
+                    }),
+                  );
+              }}
+              className="mt-3 h-9 rounded-full bg-plum px-4 text-sm font-semibold text-white disabled:opacity-40"
+            >
+              Refund {amountOk ? inr(Math.round(amt * 100) / 100) : ""} via
+              Cashfree
+            </button>
+          </>
+        ) : (
+          <p className="mt-1 text-xs text-muted">
+            This customer didn&apos;t pay through Cashfree (or it&apos;s already
+            refunded there). Refund them another way and record it below.
+          </p>
+        ))}
+    </div>
+  );
+}
+
 /* ---- notes ---- */
 
 function NotesBox({
   caseId,
   staff,
+  people,
   demo,
 }: {
   caseId: string;
   staff: Staff;
+  people: StaffMember[];
   demo: boolean;
 }) {
   const [notes, setNotes] = useState<string | null>(demo ? "" : null);
+  const [meta, setMeta] = useState<{ by: string | null; at: Date | null }>({
+    by: null,
+    at: null,
+  });
   const [saved, setSaved] = useState("");
   const [state, setState] = useState<"idle" | "saving" | "saved" | "error">(
     "idle",
@@ -2343,7 +3178,12 @@ function NotesBox({
     if (demo) return;
     let off = false;
     readNotes(caseId)
-      .then((n) => !off && (setNotes(n), setSaved(n)))
+      .then((n) => {
+        if (off) return;
+        setNotes(n.notes);
+        setSaved(n.notes);
+        setMeta({ by: n.updatedBy, at: n.updatedAt });
+      })
       .catch(() => !off && setNotes(""));
     return () => {
       off = true;
@@ -2376,6 +3216,7 @@ function NotesBox({
             try {
               if (!demo) await saveNotes(caseId, notes ?? "", staff.email);
               setSaved(notes ?? "");
+              setMeta({ by: staff.email, at: new Date() });
               setState("saved");
             } catch {
               setState("error");
@@ -2392,6 +3233,7 @@ function NotesBox({
           <span className="text-xs text-red-700">Couldn&apos;t save.</span>
         )}
       </div>
+      <UpdatedBy by={meta.by} at={meta.at} people={people} className="mt-2" />
     </Section>
   );
 }
@@ -2409,7 +3251,11 @@ function NewCasePanel({
   onClose: () => void;
   onCreated: (id: string) => void;
 }) {
-  const [extra, setExtra] = useState({ email: "", area: "" });
+  const [extra, setExtra] = useState({
+    email: "",
+    area: "",
+    leadSource: "Referral",
+  });
   const input =
     "mt-1 h-10 w-full rounded-xl border border-line bg-white px-3 text-sm text-plum focus:border-plum focus:outline-none";
   const set = (k: keyof typeof extra) => (e: { target: { value: string } }) =>
@@ -2418,14 +3264,26 @@ function NewCasePanel({
     <SidePanel title="New servicing case" onClose={onClose}>
       <div className="flex-1 space-y-4 overflow-y-auto px-5 py-5">
         <p className="text-sm text-muted">
-          For customers who paid another way. Converted enquiries come here when
-          the sales team submits the Servicing form.
+          For referrals and customers who paid another way. Converted enquiries
+          come here when the sales team submits the Servicing form.
         </p>
         <ServicingForm
           initial={emptyForm()}
           submitLabel="Create case"
           extra={
             <div className="grid gap-3 border-t border-line pt-4 sm:grid-cols-2">
+              <label className="block text-xs font-semibold text-muted">
+                Source
+                <select
+                  value={extra.leadSource}
+                  onChange={set("leadSource")}
+                  className={input}
+                >
+                  {TEAM_LEAD_SOURCES.map((s) => (
+                    <option key={s}>{s}</option>
+                  ))}
+                </select>
+              </label>
               <label className="block text-xs font-semibold text-muted">
                 Customer email
                 <input
@@ -2457,6 +3315,7 @@ function NewCasePanel({
                       area: extra.area,
                       // Paid outside Cashfree: record the form's amount as a manual payment.
                       amount: form.amountPaid,
+                      leadSource: extra.leadSource,
                     },
                     staff.email,
                   );

@@ -119,6 +119,32 @@ export async function fetchOrderRefunds(orderId: string): Promise<Record<string,
   return Array.isArray(res) ? res : (res.data ?? []);
 }
 
+/** POST /pg/orders/{order_id}/refunds: start a refund (STANDARD speed). */
+export async function createOrderRefund(
+  orderId: string,
+  input: { refundId: string; amount: number; note: string },
+): Promise<Record<string, unknown>> {
+  return cashfreeRequest<Record<string, unknown>>("POST", `/orders/${encodeURIComponent(orderId)}/refunds`, {
+    refund_amount: input.amount,
+    refund_id: input.refundId,
+    refund_note: input.note,
+    refund_speed: "STANDARD",
+  });
+}
+
+/** GET /pg/orders/{order_id}/refunds/{refund_id}; null when Cashfree has no such refund. */
+export async function fetchOrderRefund(orderId: string, refundId: string): Promise<Record<string, unknown> | null> {
+  try {
+    return await cashfreeRequest<Record<string, unknown>>(
+      "GET",
+      `/orders/${encodeURIComponent(orderId)}/refunds/${encodeURIComponent(refundId)}`,
+    );
+  } catch (err) {
+    if (err instanceof CashfreeError && err.status === 404) return null;
+    throw err;
+  }
+}
+
 /* ---------------- refunds by date (PG reconciliation) ---------------- */
 
 export type ReconRefund = {
@@ -226,4 +252,78 @@ export async function fetchRefundsByDate(start: Date, end: Date, path: "/recon" 
     if (!cursor || !data.length) break;
   }
   return { refunds: out, scanned, types, sampleKeys: out.length ? null : sampleKeys };
+}
+
+/* ---------------- payments by date (backfill) ---------------- */
+
+/** GET /pg/orders/{order_id}/payments: every payment attempt on an order. */
+export async function fetchOrderPayments(orderId: string): Promise<Record<string, unknown>[]> {
+  const res = await cashfreeRequest<Record<string, unknown>[] | { data?: Record<string, unknown>[] }>(
+    "GET",
+    `/orders/${encodeURIComponent(orderId)}/payments`,
+  );
+  return Array.isArray(res) ? res : (res.data ?? []);
+}
+
+export type ReconPayment = {
+  orderId: string;
+  cfPaymentId: string | null;
+  customerName: string | null;
+  customerPhone: string | null;
+  customerEmail: string | null;
+};
+
+/**
+ * PAYMENT events from /pg/settlement/recon (every payment settled in the period) or
+ * /pg/recon (by event date) for [start, end). Used only to find order IDs and
+ * customer details; the payments themselves are then read from the order API.
+ */
+export async function fetchPaymentsByDate(
+  start: Date,
+  end: Date,
+  path: "/recon" | "/settlement/recon",
+): Promise<{ payments: ReconPayment[]; scanned: number; types: Record<string, number> }> {
+  const out: ReconPayment[] = [];
+  const types: Record<string, number> = {};
+  let scanned = 0;
+  const until = new Date(Math.min(end.getTime() - 1000, Date.now() - 60_000));
+  if (until <= start) return { payments: out, scanned, types };
+  let cursor: string | null = null;
+  for (let page = 0; page < 60; page++) {
+    let res: { cursor?: string | null; data?: Item[] } | null = null;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        res = await cashfreeRequest("POST", path, {
+          pagination: { limit: 100, cursor },
+          filters: { start_date: istIso(start), end_date: istIso(until) },
+        });
+        break;
+      } catch (err) {
+        if (attempt < 4 && err instanceof CashfreeError && (err.status === 429 || err.status >= 500)) {
+          await sleep(800 * 2 ** attempt);
+          continue;
+        }
+        throw err;
+      }
+    }
+    const data = Array.isArray(res?.data) ? res!.data : [];
+    for (const item of data) {
+      scanned++;
+      const type = String(field(item, "event_details", "event_type") ?? "UNKNOWN").toUpperCase();
+      types[type] = (types[type] ?? 0) + 1;
+      if (type !== "PAYMENT") continue;
+      const orderId = str(field(item, "order_details", "order_id"));
+      if (!orderId) continue;
+      out.push({
+        orderId,
+        cfPaymentId: str(field(item, "payment_details", "cf_payment_id")) ?? str(field(item, "event_details", "event_id")),
+        customerName: str(field(item, "customer_details", "customer_name")),
+        customerPhone: str(field(item, "customer_details", "customer_phone")),
+        customerEmail: str(field(item, "customer_details", "customer_email")),
+      });
+    }
+    cursor = res?.cursor ?? null;
+    if (!cursor || !data.length) break;
+  }
+  return { payments: out, scanned, types };
 }

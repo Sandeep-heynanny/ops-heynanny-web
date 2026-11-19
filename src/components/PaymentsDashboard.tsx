@@ -27,6 +27,7 @@ import {
   bucketize,
   change,
   countsAsRefund,
+  importPayments,
   importRefunds,
   inRange,
   methodLabel,
@@ -51,7 +52,77 @@ import {
   type RefundStatus,
   type Settlement,
 } from "@/lib/payments";
-import { displayPhone } from "@/lib/types";
+import { useLeads } from "@/lib/leads";
+import {
+  bucketMeta,
+  caseBucket,
+  useServicingCases,
+  type ServicingCase,
+} from "@/lib/servicing";
+import { displayPhone, STATUS_META, type Lead } from "@/lib/types";
+
+/** Where a paying customer is now: their servicing case, else their latest enquiry. */
+type WhereNow = { label: string; tone: "servicing" | "enquiry" | "none" };
+
+const last10 = (phone: string | null | undefined) => {
+  const d = (phone ?? "").replace(/\D/g, "").slice(-10);
+  return d.length === 10 ? d : null;
+};
+
+function useWhereNow(enabled: boolean) {
+  const { leads } = useLeads(enabled, enabled ? undefined : []);
+  const { cases } = useServicingCases(enabled, enabled ? undefined : []);
+  return useMemo(() => {
+    const ms = (t: { toMillis?: () => number } | null | undefined) =>
+      t?.toMillis?.() ?? 0;
+    const caseById = new Map(cases.map((c) => [c.id, c]));
+    // Per phone: the open case if there is one, else the latest.
+    const caseByPhone = new Map<string, ServicingCase>();
+    for (const c of [...cases].sort(
+      (a, b) => ms(a.createdAt) - ms(b.createdAt),
+    )) {
+      const k = last10(c.customer.phone);
+      if (!k) continue;
+      const had = caseByPhone.get(k);
+      if (!had || had.stage === "cancelled" || c.stage !== "cancelled")
+        caseByPhone.set(k, c);
+    }
+    const leadByPhone = new Map<string, Lead>();
+    for (const l of [...leads].sort(
+      (a, b) => ms(a.createdAt) - ms(b.createdAt),
+    )) {
+      const k = last10(l.phone);
+      if (k) leadByPhone.set(k, l);
+    }
+    return (p: Payment): WhereNow => {
+      const k = last10(p.customer_details?.customer_phone);
+      const c =
+        (typeof p.servicing_case_id === "string"
+          ? caseById.get(p.servicing_case_id)
+          : undefined) ?? (k ? caseByPhone.get(k) : undefined);
+      if (c)
+        return {
+          label: `In servicing · ${bucketMeta(caseBucket(c)).label}`,
+          tone: "servicing",
+        };
+      if (typeof p.servicing_case_id === "string")
+        return { label: "In servicing", tone: "servicing" };
+      const l = k ? leadByPhone.get(k) : undefined;
+      if (l)
+        return {
+          label: `Enquiry · ${STATUS_META[l.status]?.label ?? l.status}${l.status === "converted" && !l.ops?.servicingCaseId ? " · form pending" : ""}`,
+          tone: "enquiry",
+        };
+      return { label: "Not in Enquiries", tone: "none" };
+    };
+  }, [leads, cases]);
+}
+
+const WHERE_TONE: Record<WhereNow["tone"], string> = {
+  servicing: "bg-[#ece6fb] text-[#5b3cc4]",
+  enquiry: "bg-[#fbecc8] text-[#7a5410]",
+  none: "bg-beige text-muted",
+};
 
 type Tab = "transactions" | "refunds" | "settlements";
 const MONTHS = [
@@ -84,6 +155,7 @@ export function PaymentsDashboard({
   demo?: Demo;
 }) {
   const { payments, loading, error } = usePayments(demo?.payments);
+  const whereNow = useWhereNow(!demo);
   const {
     refunds,
     loading: refundsLoading,
@@ -333,7 +405,13 @@ export function PaymentsDashboard({
         </div>
 
         {tab === "transactions" && (
-          <TransactionsTab payments={live} range={range} loading={loading} />
+          <TransactionsTab
+            payments={live}
+            range={range}
+            loading={loading}
+            whereNow={whereNow}
+            demo={!!demo}
+          />
         )}
         {tab === "refunds" && (
           <RefundsTab
@@ -737,13 +815,46 @@ function TransactionsTab({
   payments,
   range,
   loading,
+  whereNow,
+  demo,
 }: {
   payments: Payment[];
   range: RangeT;
   loading: boolean;
+  /** Servicing stage or enquiry status for the payment's phone. */
+  whereNow: (p: Payment) => WhereNow;
+  demo: boolean;
 }) {
   const [status, setStatus] = useState<"all" | PaymentStatus>("all");
   const [search, setSearch] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importMsg, setImportMsg] = useState<string | null>(null);
+
+  const runImport = async () => {
+    setImporting(true);
+    setImportMsg(null);
+    try {
+      if (demo) {
+        setImportMsg("Demo mode: nothing imported.");
+        return;
+      }
+      const r = await importPayments(120);
+      const parts = [
+        `Checked ${r.orders} Cashfree order${r.orders === 1 ? "" : "s"}: ${r.created} payment${r.created === 1 ? "" : "s"} added, ${r.upgraded} updated, ${r.alreadySaved} already here.`,
+        r.recon.error ? `Cashfree reports: error (${r.recon.error}).` : "",
+        r.failedOrders ? `${r.failedOrders} order${r.failedOrders === 1 ? "" : "s"} couldn't be checked.` : "",
+        r.errors.length
+          ? `Cashfree said: ${r.errors.map((e) => `${e.count}× ${e.message} (e.g. ${e.orderId})`).join(" · ")}`
+          : "",
+        r.created ? "Now press “Import from Cashfree” on the Refunds tab too, for refunds on these payments." : "",
+      ];
+      setImportMsg(parts.filter(Boolean).join(" "));
+    } catch (e) {
+      setImportMsg((e as Error).message);
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const current = useMemo(
     () => summarize(payments, range.start, range.end),
@@ -781,13 +892,33 @@ function TransactionsTab({
   return (
     <>
       <Panel>
-        <Totals
-          items={[
-            ["Total transactions", String(current.paid)],
-            ["Transactions amount", formatINRExact(current.revenue)],
-          ]}
-          note="Successful payments only, as on Cashfree."
-        />
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <Totals
+            items={[
+              ["Total transactions", String(current.paid)],
+              ["Transactions amount", formatINRExact(current.revenue)],
+            ]}
+            note="Successful payments only, as on Cashfree."
+          />
+          <button
+            type="button"
+            onClick={runImport}
+            disabled={importing}
+            className="inline-flex h-9 items-center gap-2 rounded-full bg-white px-3.5 text-sm font-semibold text-plum ring-1 ring-line hover:bg-milk disabled:opacity-50"
+            title="Bring in payments from Cashfree that aren't here yet (last 120 days)"
+          >
+            <RefreshCw
+              className={`size-4 ${importing ? "animate-spin" : ""}`}
+              aria-hidden="true"
+            />
+            {importing ? "Importing… (up to a few minutes)" : "Import from Cashfree"}
+          </button>
+        </div>
+        {importMsg && (
+          <p className="mt-2 rounded-xl bg-white px-3 py-2 font-mono text-[0.72rem] leading-relaxed text-muted ring-1 ring-line">
+            {importMsg}
+          </p>
+        )}
         <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
           <Metric
             label="Amount"
@@ -852,6 +983,11 @@ function TransactionsTab({
               ["Booking ID", (p) => p.booking_id ?? ""],
               ["Cashfree payment ID", (p) => String(p.cf_payment_id)],
               ["Failure reason", (p) => p.failure_reason ?? ""],
+              [
+                "Customer now",
+                (p) =>
+                  p.payment_status === "SUCCESS" ? whereNow(p).label : "",
+              ],
               ["Environment", (p) => p.environment],
             ],
             `heynanny-transactions-${fileRange(range)}.csv`,
@@ -896,15 +1032,23 @@ function TransactionsTab({
               methodLabel(p.payment_method),
               <div key="s">
                 <Badge meta={PAYMENT_STATUS_META[p.payment_status]} />
-                {typeof p.servicing_case_id === "string" && (
-                  <p className="mt-1 text-xs font-semibold text-[#5b3cc4]">
-                    In servicing
-                  </p>
+                {/* Paid: where the customer is now, as its own badge below. */}
+                {p.payment_status === "SUCCESS" && (
+                  <div className="mt-1.5">
+                    <Badge
+                      meta={{
+                        label: whereNow(p).label,
+                        tone: WHERE_TONE[whereNow(p).tone],
+                      }}
+                    />
+                  </div>
                 )}
                 {p.failure_reason && (
-                  <p className="mt-1 max-w-[220px] text-xs text-muted">
-                    {p.failure_reason}
-                  </p>
+                  <div className="mt-1.5">
+                    <span className="inline-flex max-w-[260px] rounded-full bg-[#f6d9d6] px-2.5 py-1 text-xs font-semibold text-[#a23b3b]">
+                      {p.failure_reason}
+                    </span>
+                  </div>
                 )}
               </div>,
               <div key="o">
@@ -962,12 +1106,10 @@ function RefundsTab({
   const buckets = useMemo(
     () =>
       bucketize(
-        refunds
-          .filter(countsAsRefund)
-          .map((r) => ({
-            at: refundedAt(r),
-            amount: Number(r.refund_amount) || 0,
-          })),
+        refunds.filter(countsAsRefund).map((r) => ({
+          at: refundedAt(r),
+          amount: Number(r.refund_amount) || 0,
+        })),
         range.start,
         range.end,
       ),

@@ -18,11 +18,15 @@ import {
   Trash2,
   Upload,
   X,
+  CopyX,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { AppHeader } from "@/components/AppHeader";
 import { confirmDialog } from "@/components/ConfirmDialog";
+import { UpdatedBy } from "@/components/UpdatedBy";
+import { staffName, useStaffList, type StaffMember } from "@/lib/staff-list";
+import { LanguagePicker } from "@/components/LanguagePicker";
 import { PlacePicker } from "@/components/PlacePicker";
 import { NannyAvatar } from "@/components/NannyAvatar";
 import { profileData } from "@/components/ProfileCard";
@@ -76,11 +80,12 @@ const ROLES: { label: string; workType: WorkType | null }[] = [
 /** Servicing team + admins: the caregiver database. Export and import are admin-only. */
 export function NanniesPage({ staff, demo }: { staff: Staff; demo?: Nanny[] }) {
   const { nannies, loading, error } = useNannies(true, demo);
+  const people = useStaffList(!!demo);
   const isAdmin = canExportNannies(staff.role);
   const canImport = canImportNannies(staff.role);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<"all" | NannyStatus>("all");
-  const [work, setWork] = useState<"all" | WorkType>("all");
+  const [roleFilter, setRoleFilter] = useState("all");
   const [language, setLanguage] = useState("all");
   const [city, setCity] = useState("all");
   // Which nanny the drawer is showing. The drawer reads her live record, so it
@@ -110,6 +115,15 @@ export function NanniesPage({ staff, demo }: { staff: Staff; demo?: Nanny[] }) {
       ].sort(),
     [nannies],
   );
+  // The standard roles first, then any other role already on a nanny.
+  const roleOptions = useMemo(() => {
+    const extra = [
+      ...new Set(nannies.map((n) => n.role).filter((r): r is string => !!r)),
+    ]
+      .filter((r) => !ROLES.some((x) => x.label === r))
+      .sort();
+    return [...ROLES.map((r) => r.label), ...extra];
+  }, [nannies]);
   const cities = useMemo(
     () =>
       [
@@ -117,6 +131,18 @@ export function NanniesPage({ staff, demo }: { staff: Staff; demo?: Nanny[] }) {
       ].sort(),
     [nannies],
   );
+  // Nannies sharing a phone number with someone else: added twice by mistake.
+  const dupIds = useMemo(() => {
+    const byPhone = new Map<string, string[]>();
+    for (const n of nannies) {
+      const p = phoneKey(n.phone);
+      if (p) byPhone.set(p, [...(byPhone.get(p) ?? []), n.id]);
+    }
+    return new Set(
+      [...byPhone.values()].filter((ids) => ids.length > 1).flat(),
+    );
+  }, [nannies]);
+  const [dupsOnly, setDupsOnly] = useState(false);
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: nannies.length };
     for (const n of nannies) c[n.status] = (c[n.status] ?? 0) + 1;
@@ -127,8 +153,10 @@ export function NanniesPage({ staff, demo }: { staff: Staff; demo?: Nanny[] }) {
     const digits = q.replace(/\D/g, "");
     return nannies.filter(
       (n) =>
+        (!dupsOnly || dupIds.has(n.id)) &&
         (status === "all" || n.status === status) &&
-        (work === "all" || n.workType === work || n.workType === "both") &&
+        (roleFilter === "all" ||
+          (roleFilter === "none" ? !n.role : n.role === roleFilter)) &&
         (language === "all" ||
           n.languages.some(
             (l) => l === language || l === `${language} (basic)`,
@@ -144,7 +172,7 @@ export function NanniesPage({ staff, demo }: { staff: Staff; demo?: Nanny[] }) {
             ((n.phone ?? "").includes(digits) ||
               (n.altPhone ?? "").includes(digits)))),
     );
-  }, [nannies, search, status, work, language, city]);
+  }, [nannies, search, status, roleFilter, language, city, dupsOnly, dupIds]);
 
   const exportCsv = () =>
     downloadRows(
@@ -242,13 +270,13 @@ export function NanniesPage({ staff, demo }: { staff: Staff; demo?: Nanny[] }) {
               />
             </label>
             <Pick
-              label="Work type"
-              value={work}
-              onChange={(v) => setWork(v as typeof work)}
+              label="Role"
+              value={roleFilter}
+              onChange={setRoleFilter}
               options={[
-                ["all", "Live-in or day"],
-                ["live_in", "Live-in"],
-                ["day", "Day"],
+                ["all", "All roles"],
+                ...roleOptions.map((r) => [r, r] as [string, string]),
+                ["none", "Role not set"],
               ]}
             />
             {cities.length > 1 && (
@@ -271,6 +299,18 @@ export function NanniesPage({ staff, demo }: { staff: Staff; demo?: Nanny[] }) {
                 ...languages.map((l) => [l, l] as [string, string]),
               ]}
             />
+            {(dupIds.size > 0 || dupsOnly) && (
+              <button
+                type="button"
+                aria-pressed={dupsOnly}
+                onClick={() => setDupsOnly((d) => !d)}
+                title="Nannies added more than once (same phone number)"
+                className={`inline-flex h-10 items-center gap-1.5 rounded-full px-4 text-sm font-semibold ring-1 ${dupsOnly ? "bg-amber-100 text-amber-900 ring-amber-300" : "bg-white text-amber-800 ring-line hover:bg-amber-50"}`}
+              >
+                <CopyX className="size-4" aria-hidden="true" />
+                {dupsOnly ? "Showing duplicates" : "Duplicates"} ({dupIds.size})
+              </button>
+            )}
           </div>
           <div
             role="tablist"
@@ -317,6 +357,7 @@ export function NanniesPage({ staff, demo }: { staff: Staff; demo?: Nanny[] }) {
         ) : (
           <NanniesTable
             rows={rows}
+            people={people}
             onOpen={(n) => setEditing({ key: n.id, id: n.id })}
           />
         )}
@@ -326,6 +367,9 @@ export function NanniesPage({ staff, demo }: { staff: Staff; demo?: Nanny[] }) {
         <NannyForm
           key={editing.key}
           nanny={editingNanny}
+          people={people}
+          others={nannies}
+          onOpen={(id) => setEditing({ key: id, id })}
           staff={staff}
           demo={!!demo}
           onSaved={(id) => !demo && setEditing((e) => (e ? { ...e, id } : e))}
@@ -346,13 +390,16 @@ export function NanniesPage({ staff, demo }: { staff: Staff; demo?: Nanny[] }) {
 
 /* ---------------- table ---------------- */
 
-type SortKey = "name" | "age" | "experienceYears" | "area" | "status";
+type SortKey =
+  "name" | "age" | "experienceYears" | "area" | "status" | "updated";
 
 function NanniesTable({
   rows,
+  people,
   onOpen,
 }: {
   rows: Nanny[];
+  people: StaffMember[];
   onOpen: (n: Nanny) => void;
 }) {
   const [sort, setSort] = useState<SortState>({ key: "name", dir: 1 });
@@ -367,6 +414,8 @@ function NanniesTable({
           return (nannyPlace(n) ?? "").toLowerCase();
         case "status":
           return n.status;
+        case "updated":
+          return n.updatedAt?.toMillis?.() ?? 0;
         default:
           return n.name.toLowerCase();
       }
@@ -383,7 +432,7 @@ function NanniesTable({
   const th = { sort, setSort };
   return (
     <div className="mt-4 overflow-x-auto rounded-[20px] border border-line bg-paper">
-      <table className="w-full min-w-[760px] text-sm">
+      <table className="w-full min-w-[880px] text-sm">
         <thead className="border-b border-line text-left text-xs uppercase tracking-wider text-muted">
           <tr>
             <Th {...th} k="name">
@@ -400,6 +449,9 @@ function NanniesTable({
             <Th {...th}>Work</Th>
             <Th {...th} k="area">
               Area
+            </Th>
+            <Th {...th} k="updated">
+              Last updated
             </Th>
             <Th {...th} k="status">
               Status
@@ -454,6 +506,20 @@ function NanniesTable({
                 <span className="block truncate">{n.area ?? "—"}</span>
                 {n.city && n.city !== n.area && (
                   <span className="block text-xs text-muted">{n.city}</span>
+                )}
+              </td>
+              <td className="whitespace-nowrap px-4 py-2.5 text-xs">
+                {n.updatedAt?.toDate ? (
+                  <span title={n.updatedBy ?? undefined}>
+                    <span className="block text-plum">
+                      {formatDateTime(n.updatedAt.toDate())}
+                    </span>
+                    <span className="block text-muted">
+                      {n.updatedBy ? staffName(n.updatedBy, people) : "—"}
+                    </span>
+                  </span>
+                ) : (
+                  <span className="text-muted">—</span>
                 )}
               </td>
               <td className="px-4 py-2.5">
@@ -555,12 +621,20 @@ const emptyInput: NannyInput = {
 
 function NannyForm({
   nanny,
+  people,
+  others,
+  onOpen,
   staff,
   demo,
   onSaved,
   onClose,
 }: {
   nanny: Nanny | null;
+  /** Everyone on staff, for "Last updated by". */
+  people: StaffMember[];
+  /** Every nanny, to catch the same phone number being added twice. */
+  others: Nanny[];
+  onOpen: (id: string) => void;
   staff: Staff;
   demo: boolean;
   onSaved: (id: string) => void;
@@ -644,6 +718,36 @@ function NannyForm({
     v.trim() && Number.isFinite(Number(v)) ? Number(v) : null;
   const phoneDigits = f.phone.replace(/\D/g, "").slice(-10);
   const phoneBad = !!f.phone.trim() && !/^[6-9]\d{9}$/.test(phoneDigits);
+  // Same phone as another nanny: she's probably already in the list. Blocks a
+  // new nanny, or changing the number to one that's taken; an existing
+  // duplicate can still be saved so it can be fixed.
+  const samePhone = phoneBad
+    ? []
+    : others.filter(
+        (o) =>
+          o.id !== id &&
+          (phoneKey(o.phone) === phoneDigits ||
+            phoneKey(o.altPhone) === phoneDigits),
+      );
+  const phoneTaken =
+    samePhone.length > 0 && (!exists || phoneKey(nanny?.phone) !== phoneDigits);
+  // Everything is required except role, skills, documents, alternate phone and notes.
+  const [tried, setTried] = useState(false);
+  const missing: Record<string, boolean> = {
+    "Full name": !f.name.trim(),
+    Photo: !shownPhoto,
+    Phone: !f.phone.trim() || phoneBad,
+    Age: numOrNull(f.age) === null || Number(f.age) < 18 || Number(f.age) > 75,
+    Experience: numOrNull(f.experienceYears) === null,
+    "Work type": !f.workType,
+    Location: !loc.address.trim(),
+    "Area / locality": !f.area.trim(),
+    City: !f.city.trim(),
+    "Native place": !f.nativePlace.trim(),
+    Languages: list(f.languages).length === 0,
+  };
+  const missingList = Object.keys(missing).filter((k) => missing[k]);
+  const bad = (k: string) => tried && missing[k];
   const altDigits = f.altPhone.replace(/\D/g, "").slice(-10);
   const altBad = !!f.altPhone.trim() && !/^[6-9]\d{9}$/.test(altDigits);
 
@@ -654,7 +758,8 @@ function NannyForm({
   }, [onClose]);
 
   const save = async () => {
-    if (!f.name.trim() || phoneBad || altBad) return;
+    setTried(true);
+    if (missingList.length || altBad || phoneTaken) return;
     setSaving(true);
     setError(null);
     try {
@@ -763,24 +868,27 @@ function NannyForm({
             {photoError && (
               <p className="mt-1 text-xs text-red-700">{photoError}</p>
             )}
+            {bad("Photo") && !photoError && (
+              <p className="mt-1 text-xs text-red-700">Add her photo.</p>
+            )}
           </div>
         </div>
         <Field label="Full name *">
           <input
             value={f.name}
             onChange={set("name")}
-            className={input}
+            className={`${input} ${bad("Full name") ? "border-red-400" : ""}`}
             autoFocus={!nanny}
           />
         </Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Phone">
+          <Field label="Phone *">
             <input
               value={f.phone}
               onChange={set("phone")}
               inputMode="tel"
               placeholder="98765 43210"
-              className={`${input} ${phoneBad ? "border-red-400" : ""}`}
+              className={`${input} ${phoneBad || bad("Phone") || phoneTaken ? "border-red-400" : ""}`}
             />
           </Field>
           <Field label="Alternate phone">
@@ -813,27 +921,27 @@ function NannyForm({
               )}
             </select>
           </Field>
-          <Field label="Age">
+          <Field label="Age *">
             <input
               value={f.age}
               onChange={set("age")}
               inputMode="numeric"
-              className={input}
+              className={`${input} ${bad("Age") ? "border-red-400" : ""}`}
             />
           </Field>
-          <Field label="Experience (years)">
+          <Field label="Experience (years) *">
             <input
               value={f.experienceYears}
               onChange={set("experienceYears")}
               inputMode="decimal"
-              className={input}
+              className={`${input} ${bad("Experience") ? "border-red-400" : ""}`}
             />
           </Field>
-          <Field label="Work type">
+          <Field label="Work type *">
             <select
               value={f.workType}
               onChange={set("workType")}
-              className={input}
+              className={`${input} ${bad("Work type") ? "border-red-400" : ""}`}
             >
               <option value="">Not set</option>
               <option value="live_in">Live-in</option>
@@ -841,7 +949,7 @@ function NannyForm({
               <option value="both">Live-in or day</option>
             </select>
           </Field>
-          <Field label="Status">
+          <Field label="Status *">
             <select value={f.status} onChange={set("status")} className={input}>
               {(Object.keys(NANNY_STATUS_META) as NannyStatus[]).map((s) => (
                 <option key={s} value={s}>
@@ -851,8 +959,44 @@ function NannyForm({
             </select>
           </Field>
         </div>
+        {samePhone.length > 0 && (
+          <div
+            role="alert"
+            className={`rounded-xl px-3 py-2.5 text-sm ring-1 ${phoneTaken ? "bg-red-50 text-red-800 ring-red-200" : "bg-amber-50 text-amber-900 ring-amber-200"}`}
+          >
+            <p className="font-semibold">
+              {phoneTaken
+                ? "This number is already on another nanny."
+                : "Another nanny has this number: she may be a duplicate."}
+            </p>
+            <ul className="mt-1 space-y-1">
+              {samePhone.map((o) => (
+                <li key={o.id} className="flex flex-wrap items-center gap-2">
+                  <span>
+                    {o.name}
+                    {o.createdBy
+                      ? ` · added by ${staffName(o.createdBy, people)}`
+                      : ""}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onOpen(o.id)}
+                    className="font-semibold underline underline-offset-2"
+                  >
+                    Open her
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {!phoneTaken && (
+              <p className="mt-1 text-xs">
+                Keep one record and ask an admin to delete the other.
+              </p>
+            )}
+          </div>
+        )}
         <div className="block text-xs font-semibold text-muted">
-          Location (for matching)
+          Location (for matching) *
           <PlacePicker
             address={loc.address}
             geo={loc.geo}
@@ -868,27 +1012,33 @@ function NannyForm({
                 }));
             }}
           />
-          {!loc.geo && (
-            <span className="mt-1 block font-normal text-muted">
-              Used to suggest her to families nearby.
+          {bad("Location") ? (
+            <span className="mt-1 block font-normal text-red-700">
+              Pick where she lives or works from.
             </span>
+          ) : (
+            !loc.geo && (
+              <span className="mt-1 block font-normal text-muted">
+                Used to suggest her to families nearby.
+              </span>
+            )
           )}
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Area / locality">
+          <Field label="Area / locality *">
             <input
               value={f.area}
               onChange={set("area")}
               placeholder="e.g. KR Puram"
-              className={input}
+              className={`${input} ${bad("Area / locality") ? "border-red-400" : ""}`}
             />
           </Field>
-          <Field label="City">
+          <Field label="City *">
             <input
               value={f.city}
               onChange={set("city")}
               list="nanny-cities"
-              className={input}
+              className={`${input} ${bad("City") ? "border-red-400" : ""}`}
             />
             <datalist id="nanny-cities">
               {["Bengaluru", "Mumbai", "Delhi"].map((c) => (
@@ -896,12 +1046,12 @@ function NannyForm({
               ))}
             </datalist>
           </Field>
-          <Field label="Native place (state / town)">
+          <Field label="Native place (state / town) *">
             <input
               value={f.nativePlace}
               onChange={set("nativePlace")}
               placeholder="e.g. Madhya Pradesh"
-              className={input}
+              className={`${input} ${bad("Native place") ? "border-red-400" : ""}`}
             />
           </Field>
         </div>
@@ -925,14 +1075,17 @@ function NannyForm({
             </span>
           </span>
         </label>
-        <Field label="Languages (comma separated)">
-          <input
-            value={f.languages}
-            onChange={set("languages")}
-            placeholder="Kannada, Hindi"
-            className={input}
+        {/* Not a <label>: it would forward clicks inside the dropdown to its button. */}
+        <div className="block text-xs font-semibold text-muted">
+          Languages *
+          <LanguagePicker
+            value={list(f.languages)}
+            onChange={(next) =>
+              setF((x) => ({ ...x, languages: next.join(", ") }))
+            }
+            invalid={!!bad("Languages")}
           />
-        </Field>
+        </div>
         <Field label="Skills (comma separated)">
           <input
             value={f.skills}
@@ -958,7 +1111,27 @@ function NannyForm({
             Change this from the servicing case.
           </p>
         )}
+        {tried && missingList.length > 0 && (
+          <p className="text-sm text-red-700" role="alert">
+            Fill in: {missingList.join(", ")}.
+          </p>
+        )}
         {error && <p className="text-sm text-red-700">{error}</p>}
+        {nanny && (
+          <div className="flex flex-col gap-1">
+            <UpdatedBy
+              by={nanny.createdBy}
+              at={nanny.createdAt?.toDate?.() ?? null}
+              people={people}
+              label="Created by"
+            />
+            <UpdatedBy
+              by={nanny.updatedBy}
+              at={nanny.updatedAt?.toDate?.() ?? null}
+              people={people}
+            />
+          </div>
+        )}
       </div>
       <div className="flex items-center gap-2 border-t border-line px-5 py-4">
         {confirmDelete ? (
@@ -992,9 +1165,7 @@ function NannyForm({
             <button
               type="button"
               onClick={save}
-              disabled={
-                saving || photoBusy || !f.name.trim() || phoneBad || altBad
-              }
+              disabled={saving || photoBusy}
               className="h-11 flex-1 rounded-full bg-plum px-5 text-sm font-semibold text-milk hover:bg-plum-soft disabled:opacity-50"
             >
               {saving
@@ -1350,6 +1521,12 @@ export function SidePanel({
   );
 }
 
+/** Last 10 digits, so "+91 97550 21536" and "9755021536" match. */
+function phoneKey(p: string | null | undefined) {
+  const d = (p ?? "").replace(/\D/g, "").slice(-10);
+  return d.length === 10 ? d : null;
+}
+
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <label className="block text-xs font-semibold text-muted">
@@ -1437,7 +1614,6 @@ function DocumentsBox({
 }) {
   const [busy, setBusy] = useState<DocKind | null>(null);
   const [errors, setErrors] = useState<Partial<Record<DocKind, string>>>({});
-  const isAdmin = staff.role === "admin";
   const setErr = (k: DocKind, m: string | null) =>
     setErrors((e) => ({ ...e, [k]: m ?? undefined }));
 
@@ -1473,7 +1649,7 @@ function DocumentsBox({
       else window.location.assign(url);
     } catch {
       tab?.close();
-      setErr(kind, "Couldn't open the file. Only admins can view documents.");
+      setErr(kind, "Couldn't open the file. Try again.");
     }
   };
 
@@ -1484,10 +1660,7 @@ function DocumentsBox({
         <h3 className="text-sm font-bold text-plum">Documents</h3>
       </div>
       <p className="mt-0.5 text-xs text-muted">
-        PDF or image, 5 MB or less. Saved as soon as you upload.{" "}
-        {isAdmin
-          ? "Only admins can open them."
-          : "Only admins can open them; you can upload or replace."}
+        PDF or image, 5 MB or less. Saved as soon as you upload.
       </p>
       {!nanny ? (
         <p className="mt-2 text-sm text-muted">
@@ -1518,7 +1691,7 @@ function DocumentsBox({
                         : "Not uploaded"}
                     </p>
                   </div>
-                  {d && isAdmin && (
+                  {d && (
                     <button
                       type="button"
                       onClick={() => void open(kind)}

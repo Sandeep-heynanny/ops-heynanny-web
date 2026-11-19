@@ -1,15 +1,18 @@
 "use client";
 
-import { Bell, Download, PhoneCall, Search, X } from "lucide-react";
+import { Bell, Download, PhoneCall, Plus, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AppHeader } from "@/components/AppHeader";
 import { LeadDetail } from "@/components/LeadDetail";
 import { LeadsTable } from "@/components/LeadsTable";
+import { NewEnquiryPanel } from "@/components/NewEnquiryPanel";
 import type { Staff } from "@/lib/auth";
 import { downloadCsv } from "@/lib/csv";
 import { formatCallback, isSameDay, localISODate, toDate } from "@/lib/format";
-import { useLeads } from "@/lib/leads";
+import { canReadServicing } from "@/lib/firebase";
+import { findReturning, useLeads } from "@/lib/leads";
+import { useServicingCases } from "@/lib/servicing";
 import { enquiryStaff, useStaffList } from "@/lib/staff-list";
 import {
   careShort,
@@ -47,6 +50,17 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
   );
   const allStaff = useStaffList(!!demo);
   const staffList = useMemo(() => enquiryStaff(allStaff), [allStaff]);
+  // Servicing cases, so sales can see where each converted customer is (read-only).
+  const { cases } = useServicingCases(
+    !demo && canReadServicing(staff.role),
+    demo ? [] : undefined,
+  );
+  const caseById = useMemo(
+    () => new Map(cases.map((c) => [c.id, c])),
+    [cases],
+  );
+  // Enquiries from people who converted (paid) before.
+  const returning = useMemo(() => findReturning(leads), [leads]);
 
   const [tab, setTab] = useState<Tab>("new");
   const [search, setSearch] = useState("");
@@ -54,7 +68,10 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
   const [source, setSource] = useState("all");
   const [origin, setOrigin] = useState("all");
   const [range, setRange] = useState<Range>("all");
+  /** "all", "me", "none" (unassigned) or a staff email. */
+  const [assignee, setAssignee] = useState("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [addingLead, setAddingLead] = useState(false);
   const [now, setNow] = useState(() => new Date());
 
   // Keep "12 min ago" labels fresh.
@@ -187,6 +204,16 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
       if (care !== "all" && l.careType !== care) return false;
       if (source !== "all" && (l.leadSource ?? "") !== source) return false;
       if (origin !== "all" && leadOrigin(l) !== origin) return false;
+      if (assignee !== "all") {
+        const owner = (l.ops?.assignedTo ?? "").toLowerCase();
+        if (
+          assignee === "none"
+            ? owner
+            : owner !==
+              (assignee === "me" ? staff.email : assignee).toLowerCase()
+        )
+          return false;
+      }
       if (minDate) {
         const d = toDate(l.createdAt);
         if (d && d < minDate) return false;
@@ -201,7 +228,19 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
         (l.ops?.notes ?? "").toLowerCase().includes(q)
       );
     });
-  }, [leads, search, care, source, origin, range, now]);
+  }, [leads, search, care, source, origin, range, now, assignee, staff.email]);
+
+  // Everyone who can be assigned, plus anyone already assigned an enquiry.
+  const assigneeOptions = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const t of staffList) m.set(t.email.toLowerCase(), t.name);
+    for (const l of leads) {
+      const e = l.ops?.assignedTo?.toLowerCase();
+      if (e && !m.has(e)) m.set(e, e);
+    }
+    m.delete(staff.email.toLowerCase());
+    return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [staffList, leads, staff.email]);
 
   const tabCounts = useMemo(() => {
     const counts: Record<Tab, number> = {
@@ -230,7 +269,8 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
     care !== "all" ||
     source !== "all" ||
     origin !== "all" ||
-    range !== "all";
+    range !== "all" ||
+    assignee !== "all";
 
   return (
     <div className="min-h-dvh">
@@ -248,21 +288,43 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
               automatically.
             </p>
           </div>
-          <button
-            type="button"
-            disabled={!visible.length}
-            onClick={() =>
-              downloadCsv(
-                visible,
-                `heynanny-enquiries-${localISODate(new Date())}.csv`,
-              )
-            }
-            className="inline-flex h-10 items-center gap-2 rounded-full bg-paper px-4 text-sm font-semibold text-plum ring-1 ring-line hover:bg-white disabled:opacity-50"
-          >
-            <Download className="size-4" aria-hidden="true" />
-            Export {visible.length ? `${visible.length} ` : ""}to Excel
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setAddingLead(true)}
+              className="inline-flex h-10 items-center gap-2 rounded-full bg-plum px-4 text-sm font-semibold text-milk hover:bg-plum-soft"
+            >
+              <Plus className="size-4" aria-hidden="true" />
+              New enquiry
+            </button>
+            <button
+              type="button"
+              disabled={!visible.length}
+              onClick={() =>
+                downloadCsv(
+                  visible,
+                  `heynanny-enquiries-${localISODate(new Date())}.csv`,
+                )
+              }
+              className="inline-flex h-10 items-center gap-2 rounded-full bg-paper px-4 text-sm font-semibold text-plum ring-1 ring-line hover:bg-white disabled:opacity-50"
+            >
+              <Download className="size-4" aria-hidden="true" />
+              Export {visible.length ? `${visible.length} ` : ""}to Excel
+            </button>
+          </div>
         </div>
+        {addingLead && (
+          <NewEnquiryPanel
+            demo={!!demo}
+            forSales
+            onClose={() => setAddingLead(false)}
+            onCreated={(r) => {
+              if (r.id === "demo") return;
+              setTab("new");
+              setSelectedId(r.id);
+            }}
+          />
+        )}
 
         {/* Summary */}
         <section
@@ -350,6 +412,17 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
               ]}
             />
             <Select
+              label="Assigned to"
+              value={assignee}
+              onChange={setAssignee}
+              options={[
+                ["all", "All assignees"],
+                ["me", "Assigned to me"],
+                ["none", "Unassigned"],
+                ...assigneeOptions,
+              ]}
+            />
+            <Select
               label="Received"
               value={range}
               onChange={(v) => setRange(v as Range)}
@@ -364,6 +437,7 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
                   setSource("all");
                   setOrigin("all");
                   setRange("all");
+                  setAssignee("all");
                 }}
                 className="inline-flex h-10 items-center gap-1 rounded-full px-3 text-sm font-semibold text-rose-deep hover:bg-blush/50"
               >
@@ -428,8 +502,10 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
               now={now}
               selectedId={selectedId}
               onSelect={setSelectedId}
+              returning={returning}
               emptyHint={tabEmptyHint(tab, !!filtersOn)}
               staffList={staffList}
+              cases={caseById}
             />
           )}
         </section>
@@ -440,6 +516,9 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
           lead={selected}
           staff={staff}
           staffList={staffList}
+          allStaff={allStaff}
+          returning={returning.get(selected.id)}
+          onOpenLead={setSelectedId}
           demo={!!demo}
           onClose={() => setSelectedId(null)}
         />

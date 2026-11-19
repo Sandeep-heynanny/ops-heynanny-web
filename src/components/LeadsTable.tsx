@@ -3,6 +3,7 @@
 import { ChevronRight, Inbox, PhoneCall } from "lucide-react";
 
 import { OriginBadge } from "@/components/OriginBadge";
+import { ReturningChip } from "@/components/ReturningChip";
 import { StatusPill } from "@/components/StatusPill";
 import {
   callbackState,
@@ -10,6 +11,12 @@ import {
   formatReceived,
   toDate,
 } from "@/lib/format";
+import type { Returning } from "@/lib/leads";
+import {
+  bucketMeta,
+  caseBucket,
+  type ServicingCase,
+} from "@/lib/servicing";
 import { staffName, type StaffMember } from "@/lib/staff-list";
 import {
   careShort,
@@ -28,6 +35,8 @@ export function LeadsTable({
   onSelect,
   emptyHint,
   staffList = [],
+  returning,
+  cases,
 }: {
   leads: Lead[];
   now: Date;
@@ -35,6 +44,10 @@ export function LeadsTable({
   onSelect: (id: string) => void;
   emptyHint: string;
   staffList?: StaffMember[];
+  /** People who converted on an earlier enquiry. */
+  returning?: Map<string, Returning>;
+  /** Servicing cases by ID, to show a converted customer's servicing stage. */
+  cases?: Map<string, ServicingCase>;
 }) {
   if (!leads.length) {
     return (
@@ -143,6 +156,7 @@ export function LeadsTable({
                     <StatusPill status={l.status} />
                     <CallbackChip lead={l} now={now} />
                     <ReasonChip lead={l} />
+                    <ReturningChip info={returning?.get(l.id)} />
                     {l.status === "converted" &&
                       (formPending(l) ? (
                         <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-[#fbecc8] px-2 py-0.5 text-[0.7rem] font-semibold text-[#7a5410]">
@@ -158,7 +172,14 @@ export function LeadsTable({
                             className="size-1.5 rounded-full bg-[#7a5ce0]"
                             aria-hidden="true"
                           />
-                          In servicing
+                          {(() => {
+                            const c = l.ops?.servicingCaseId
+                              ? cases?.get(l.ops.servicingCaseId)
+                              : undefined;
+                            return c
+                              ? `In servicing · ${bucketMeta(caseBucket(c)).short}`
+                              : "In servicing";
+                          })()}
                         </span>
                       ))}
                   </div>
@@ -200,6 +221,7 @@ export function LeadsTable({
                   <StatusPill status={l.status} />
                   <CallbackChip lead={l} now={now} />
                   <ReasonChip lead={l} />
+                  <ReturningChip info={returning?.get(l.id)} />
                 </div>
               </div>
               <p className="mt-2 text-sm text-plum">

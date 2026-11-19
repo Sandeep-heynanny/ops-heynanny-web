@@ -159,3 +159,40 @@ export async function sendToServicing(
     throw new Error(body?.error ?? "Couldn't submit the form.");
   return { outcome: body.outcome ?? "created", caseId: body.caseId ?? null };
 }
+
+/* ---------------- returning customers ---------------- */
+
+export type Returning = {
+  /** Their most recent earlier enquiry that was converted (they paid). */
+  previous: Lead;
+  /** How many earlier enquiries from this number were converted. */
+  times: number;
+};
+
+/**
+ * Enquiries from someone who converted before (same 10-digit phone, an earlier
+ * enquiry marked Converted). Only enquiries loaded on the dashboard (the latest
+ * 1,000) are checked.
+ */
+export function findReturning(leads: Lead[]): Map<string, Returning> {
+  const ten = (p: string | null | undefined) =>
+    (p ?? "").replace(/\D/g, "").slice(-10);
+  const ms = (l: Lead) => l.createdAt?.toMillis?.() ?? 0;
+  const converted = new Map<string, Lead[]>();
+  for (const l of leads) {
+    if (l.status !== "converted" && !l.ops?.convertedAt) continue;
+    const p = ten(l.phone);
+    if (p.length !== 10) continue;
+    converted.set(p, [...(converted.get(p) ?? []), l]);
+  }
+  const out = new Map<string, Returning>();
+  for (const l of leads) {
+    const earlier = (converted.get(ten(l.phone)) ?? []).filter(
+      (x) => x.id !== l.id && ms(x) < ms(l),
+    );
+    if (!earlier.length) continue;
+    const previous = earlier.reduce((a, b) => (ms(b) > ms(a) ? b : a));
+    out.set(l.id, { previous, times: earlier.length });
+  }
+  return out;
+}

@@ -49,7 +49,7 @@ export const PAYMENT_STATUS_META: Record<
   { label: string; tone: string }
 > = {
   SUCCESS: { label: "Paid", tone: "bg-[#dcefe1] text-success" },
-  FAILED: { label: "Failed", tone: "bg-red-50 text-red-700" },
+  FAILED: { label: "Failed", tone: "bg-[#f6d9d6] text-[#a23b3b]" },
   USER_DROPPED: { label: "Abandoned", tone: "bg-beige text-muted" },
 };
 
@@ -533,7 +533,7 @@ export const SETTLEMENT_STATUS_META: Record<
     label: "With bank",
     tone: "bg-[#fbecc8] text-[#7a5410]",
   },
-  FAILED: { label: "Failed", tone: "bg-red-50 text-red-700" },
+  FAILED: { label: "Failed", tone: "bg-[#f6d9d6] text-[#a23b3b]" },
 };
 
 async function adminFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -684,7 +684,7 @@ export const LIVE_REFUND_STATUS: Record<
   SUCCESS: { label: "Refunded", tone: "bg-[#dcefe1] text-success" },
   PENDING: { label: "Pending", tone: "bg-[#fbecc8] text-[#7a5410]" },
   ONHOLD: { label: "On hold", tone: "bg-[#fbecc8] text-[#7a5410]" },
-  FAILED: { label: "Failed", tone: "bg-red-50 text-red-700" },
+  FAILED: { label: "Failed", tone: "bg-[#f6d9d6] text-[#a23b3b]" },
   CANCELLED: { label: "Cancelled", tone: "bg-beige text-muted" },
 };
 
@@ -738,6 +738,24 @@ export type ImportRefundsResult = {
     count: number;
   }[];
 };
+
+export type ImportPaymentsResult = {
+  orders: number;
+  payments: number;
+  created: number;
+  upgraded: number;
+  alreadySaved: number;
+  failedOrders: number;
+  recon: { settlement: number; pg: number; types: Record<string, number>; error: string | null };
+  errors: { status: number; message: string; orderId: string; count: number }[];
+};
+
+/** Bring in Cashfree payments the webhook never saw (before 11 Nov 2026, or missed). */
+export const importPayments = (days = 120) =>
+  adminFetch<ImportPaymentsResult>("/api/cashfree/payments/import", {
+    method: "POST",
+    body: JSON.stringify({ days }),
+  });
 
 export const importRefunds = (days = 120) =>
   adminFetch<ImportRefundsResult>("/api/cashfree/refunds/import", {

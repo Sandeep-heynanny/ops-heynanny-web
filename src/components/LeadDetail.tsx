@@ -12,7 +12,10 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { CaseStatus } from "@/components/CaseStatus";
 import { confirmDialog } from "@/components/ConfirmDialog";
+import { ReturningChip } from "@/components/ReturningChip";
+import { UpdatedBy } from "@/components/UpdatedBy";
 import { OriginBadge } from "@/components/OriginBadge";
 import { StatusPill } from "@/components/StatusPill";
 import type { Staff } from "@/lib/auth";
@@ -24,7 +27,12 @@ import {
   toLocalInput,
   whatsappLink,
 } from "@/lib/format";
-import { deleteLead, saveLeadUpdate, sendToServicing } from "@/lib/leads";
+import {
+  deleteLead,
+  saveLeadUpdate,
+  sendToServicing,
+  type Returning,
+} from "@/lib/leads";
 import { ServicingForm } from "@/components/ServicingForm";
 import {
   emptyForm,
@@ -32,7 +40,7 @@ import {
   guessCareType,
   type ServicingFormValue,
 } from "@/lib/servicing-form";
-import type { StaffMember } from "@/lib/staff-list";
+import { staffName, type StaffMember } from "@/lib/staff-list";
 import {
   careShort,
   CLOSE_CATEGORIES,
@@ -55,6 +63,11 @@ type PanelProps = {
   lead: Lead;
   staff: Staff;
   staffList: StaffMember[];
+  /** Everyone on staff (servicing too), for names on the servicing progress. */
+  allStaff?: StaffMember[];
+  /** Set when this person converted on an earlier enquiry. */
+  returning?: Returning;
+  onOpenLead?: (id: string) => void;
   demo: boolean;
   onClose: () => void;
 };
@@ -64,7 +77,16 @@ export function LeadDetail(props: PanelProps) {
   return <Panel key={props.lead.id} {...props} />;
 }
 
-function Panel({ lead: l, staff, staffList, demo, onClose }: PanelProps) {
+function Panel({
+  lead: l,
+  staff,
+  staffList,
+  allStaff,
+  returning,
+  onOpenLead,
+  demo,
+  onClose,
+}: PanelProps) {
   const [status, setStatus] = useState<LeadStatus>(l.status);
   const [assignedTo, setAssignedTo] = useState(l.ops?.assignedTo ?? "");
   const [notes, setNotes] = useState(l.ops?.notes ?? "");
@@ -254,6 +276,11 @@ function Panel({ lead: l, staff, staffList, demo, onClose }: PanelProps) {
               <OriginBadge lead={l} />
               <span>Received {formatDateTime(toDate(l.createdAt))}</span>
             </div>
+            {returning && (
+              <div className="mt-2">
+                <ReturningChip info={returning} onOpen={onOpenLead} detailed />
+              </div>
+            )}
           </div>
           <button
             ref={closeRef}
@@ -492,8 +519,15 @@ function Panel({ lead: l, staff, staffList, demo, onClose }: PanelProps) {
                       </span>
                       <span className="block text-xs text-muted">
                         {formMsg ??
-                          `${formatDateTime(formDone.at)}${formDone.by ? ` by ${formDone.by}` : ""}`}
+                          `Submitted ${formatDateTime(formDone.at)}${formDone.by ? ` by ${staffName(formDone.by, staffList)}` : ""}`}
                       </span>
+                      <UpdatedBy
+                        by={l.ops?.servicingFormEditedBy}
+                        at={toDate(l.ops?.servicingFormEditedAt)}
+                        people={staffList}
+                        label="Last edited by"
+                        className="mt-0.5"
+                      />
                     </p>
                     <button
                       type="button"
@@ -551,13 +585,23 @@ function Panel({ lead: l, staff, staffList, demo, onClose }: PanelProps) {
               </section>
             )}
 
-            {l.ops?.updatedBy && (
-              <p className="mt-2 text-xs text-muted">
-                Last updated by {l.ops.updatedBy}
-                {l.updatedAt ? `, ${formatDateTime(toDate(l.updatedAt))}` : ""}
-              </p>
-            )}
+            <UpdatedBy
+              by={l.ops?.updatedBy}
+              at={toDate(l.updatedAt)}
+              people={staffList}
+              className="mt-3"
+            />
           </section>
+
+          {/* What servicing is doing for this customer (read-only for sales). */}
+          {l.ops?.servicingCaseId && (
+            <CaseStatus
+              caseId={l.ops.servicingCaseId}
+              staff={staff}
+              people={allStaff ?? staffList}
+              demo={demo}
+            />
+          )}
         </div>
 
         {/* Footer */}

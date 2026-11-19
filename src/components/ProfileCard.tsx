@@ -36,7 +36,19 @@ export type ProfileData = Pick<
   city?: string | null;
   nativePlace?: string | null;
   verified?: boolean;
+  /** "HSR Layout, Bengaluru" from her map location (Location for matching). */
+  workLocation?: string | null;
 };
+
+/** Area and city from the map pin only; never the street address (the card goes to customers). */
+function workLocationOf(n: Nanny | NannySnapshot): string | null {
+  const geo = "geo" in n ? n.geo : null;
+  if (!geo) return null;
+  const parts = [geo.area, geo.city]
+    .map((x) => x?.trim())
+    .filter((x): x is string => !!x);
+  return [...new Set(parts)].join(", ") || null;
+}
 
 export const profileData = (n: Nanny | NannySnapshot): ProfileData => ({
   name: n.name,
@@ -49,6 +61,7 @@ export const profileData = (n: Nanny | NannySnapshot): ProfileData => ({
   city: n.city ?? null,
   nativePlace: "nativePlace" in n ? (n.nativePlace ?? null) : null,
   verified: "verified" in n ? n.verified !== false : true,
+  workLocation: workLocationOf(n),
 });
 
 const NAVY = "#2b3458";
@@ -74,7 +87,10 @@ export function ProfileCard({
   photoSrc: string | null;
   logoSrc?: string;
 }) {
-  const first = p.name.trim().split(/\s+/)[0] ?? p.name;
+  // Full name in the heading (wraps to two lines); smaller for long names.
+  const fullName = p.name.trim().replace(/\s+/g, " ");
+  const headingSize =
+    fullName.length > 26 ? 38 : fullName.length > 18 ? 44 : 50;
   const initials = p.name
     .split(/\s+/)
     .filter(Boolean)
@@ -184,14 +200,15 @@ export function ProfileCard({
           <p
             style={{
               margin: "26px 0 0",
-              fontSize: 50,
+              fontSize: headingSize,
               fontWeight: 800,
               letterSpacing: -0.5,
               textAlign: "center",
-              lineHeight: 1.1,
+              lineHeight: 1.12,
+              overflowWrap: "anywhere",
             }}
           >
-            Meet {first}
+            Meet {fullName}
           </p>
           <div
             style={{
@@ -216,20 +233,10 @@ export function ProfileCard({
               boxSizing: "border-box",
             }}
           >
-            <p
-              style={{
-                margin: 0,
-                fontSize: 40,
-                fontWeight: 800,
-                textAlign: "center",
-                lineHeight: 1.15,
-              }}
-            >
-              {p.name}
-            </p>
             <Line
+              first
               icon={<MapPin size={30} fill={NAVY} color={PEACH} />}
-              text={p.nativePlace || p.city || "Bengaluru"}
+              text={p.city || p.area || "Bengaluru"}
             />
             <Line
               icon={<Baby size={30} color={NAVY} />}
@@ -266,7 +273,11 @@ export function ProfileCard({
         <Fact
           icon={<MapPin size={40} color={NAVY} />}
           label="Work Location"
-          value={p.city || p.area || "Bengaluru"}
+          value={
+            p.workLocation ||
+            [...new Set([p.area, p.city].filter(Boolean))].join(", ") ||
+            "Bengaluru"
+          }
         />
         <Fact
           icon={<Clock size={40} color={NAVY} />}
@@ -342,14 +353,22 @@ function Deco({
   );
 }
 
-function Line({ icon, text }: { icon: ReactNode; text: string }) {
+function Line({
+  icon,
+  text,
+  first = false,
+}: {
+  icon: ReactNode;
+  text: string;
+  first?: boolean;
+}) {
   return (
     <div
       style={{
         display: "flex",
         alignItems: "center",
         gap: 18,
-        marginTop: 22,
+        marginTop: first ? 0 : 22,
         fontSize: 30,
       }}
     >

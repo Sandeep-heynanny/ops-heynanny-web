@@ -13,7 +13,9 @@ export function OriginBadge({
   const label =
     origin === "meta" && lead.meta?.platform
       ? `Meta · ${metaPlatform(lead.meta.platform)}`
-      : meta.label;
+      : origin === "team" && lead.leadSource
+        ? lead.leadSource
+        : meta.label;
   return (
     <span
       className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[0.68rem] font-semibold ring-1 ${meta.tone} ${className}`}

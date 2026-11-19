@@ -37,6 +37,81 @@ async function photoBlobUrl(nannyId: string): Promise<string | null> {
 const nextFrame = () =>
   new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
+/**
+ * The @font-face CSS for the card's own font, with the files inlined.
+ * html-to-image would otherwise read every stylesheet on the page, and the
+ * browser blocks reading other sites' sheets (Google Maps, Google Fonts), which
+ * logs a SecurityError. We only read our own sheets. Built once per page load.
+ */
+let fontCss: Promise<string> | null = null;
+function cardFontCss(node: HTMLElement): Promise<string> {
+  fontCss ??= (async () => {
+    const families = getComputedStyle(node)
+      .fontFamily.split(",")
+      .map((f) =>
+        f
+          .trim()
+          .replace(/^["']|["']$/g, "")
+          .toLowerCase(),
+      );
+    const rules: CSSFontFaceRule[] = [];
+    for (const sheet of [...document.styleSheets]) {
+      if (sheet.href && new URL(sheet.href).origin !== location.origin)
+        continue;
+      let list: CSSRuleList;
+      try {
+        list = sheet.cssRules;
+      } catch {
+        continue;
+      }
+      for (const r of [...list])
+        if (
+          r instanceof CSSFontFaceRule &&
+          families.includes(
+            r.style
+              .getPropertyValue("font-family")
+              .trim()
+              .replace(/^["']|["']$/g, "")
+              .toLowerCase(),
+          )
+        )
+          rules.push(r);
+    }
+    const inline = async (url: string) => {
+      const blob = await (await fetch(url)).blob();
+      return new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(fr.result as string);
+        fr.onerror = reject;
+        fr.readAsDataURL(blob);
+      });
+    };
+    const parts = await Promise.all(
+      rules.map(async (r) => {
+        let css = r.cssText;
+        const base = r.parentStyleSheet?.href ?? location.href;
+        for (const m of css.matchAll(/url\((["']?)([^"')]+)\1\)/g)) {
+          if (m[2]!.startsWith("data:")) continue;
+          try {
+            css = css.replace(
+              m[0],
+              `url("${await inline(new URL(m[2]!, base).href)}")`,
+            );
+          } catch {
+            // A missing subset just falls back to the system font for those letters.
+          }
+        }
+        return css;
+      }),
+    );
+    return parts.join("\n");
+  })().catch(() => {
+    fontCss = null; // try again next time
+    return "";
+  });
+  return fontCss;
+}
+
 async function renderCardJpeg(
   item: ProfileItem,
   demo: boolean,
@@ -73,6 +148,7 @@ async function renderCardJpeg(
       quality: 0.92,
       backgroundColor: "#fcebe1",
       cacheBust: false,
+      fontEmbedCSS: await cardFontCss(node),
     });
   } finally {
     root.unmount();

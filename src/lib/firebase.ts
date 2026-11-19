@@ -74,6 +74,9 @@ export const canSeeEnquiries = (role: StaffRole) =>
 export const canSeeServicing = (role: StaffRole) =>
   role === "servicing" || role === "manager" || role === "admin";
 /** Nannies page: view, add and edit nannies (photos, documents). */
+/** Read a servicing case: the servicing side, plus sales (read-only, in the enquiry drawer) so they can update the customer. */
+export const canReadServicing = (role: StaffRole) =>
+  canSeeEnquiries(role) || canSeeServicing(role);
 export const canSeeNannies = (role: StaffRole) =>
   role === "servicing" ||
   role === "supply" ||

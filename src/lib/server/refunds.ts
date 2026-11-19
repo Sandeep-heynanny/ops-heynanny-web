@@ -126,6 +126,12 @@ async function upsert(r: RefundDoc): Promise<Outcome> {
   });
 }
 
+/** Save one refund from the Cashfree order API (e.g. one just started from a servicing case). */
+export async function saveApiRefund(r: Record<string, unknown>, orderId: string): Promise<void> {
+  const doc = fromOrderApi(r, orderId);
+  if (doc) await upsert(doc);
+}
+
 export type ImportResult = {
   orders: number;
   refunds: number;
