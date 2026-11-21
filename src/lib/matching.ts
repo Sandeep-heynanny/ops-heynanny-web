@@ -13,11 +13,12 @@ import type { Intake } from "@/lib/servicing";
 
 export type MatchMode = "day" | "stay";
 
-/** "Day Nanny" → day; "Live-In Nanny" / "Japa Nanny" → stay. */
+/** "Day Nanny" / "Flexi-Care" → day; "Live-In Nanny" / "Japa Nanny" → stay. */
 export function matchMode(careType: string | null | undefined): MatchMode | null {
   const t = (careType ?? "").toLowerCase();
   if (t.includes("japa") || t.includes("live")) return "stay";
-  if (t.includes("day")) return "day";
+  // Flexi-Care is matched like a Day Nanny (Sandeep, 2026-11-20).
+  if (t.includes("day") || t.includes("flexi")) return "day";
   return null;
 }
 
@@ -59,7 +60,7 @@ export function suggestNannies(
   careType: string | null,
   nannies: Nanny[],
   exclude: Set<string>,
-  maxKm = 5,
+  maxKm = 3,
 ): SuggestResult {
   const type = intake?.careType || careType;
   const mode = matchMode(type);
@@ -76,6 +77,7 @@ export function suggestNannies(
   for (const n of nannies) {
     if (exclude.has(n.id)) continue;
     if (n.status !== "available" && n.status !== "interviewing") continue;
+    if (n.block) continue; // Blocked by an admin: never suggested.
     if (!fitsWork(n)) continue;
     if (japaOnly && !/japa/i.test(n.role ?? "")) continue;
 

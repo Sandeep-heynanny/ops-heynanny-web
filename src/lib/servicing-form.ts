@@ -8,7 +8,8 @@ import { validGeo, type GeoPlace } from "@/lib/geo";
  *
  * Source (Servicing / Replacement / Flexi-Care) was dropped (Sandeep,
  * 2026-11-17), so everyone answers the same requirement questions; working
- * hours and start time are asked for day nannies.
+ * hours and start time are asked for day nannies and Flexi-Care. Flexi-Care
+ * (added as a care type 2026-11-20) also asks the number of days.
  */
 export const FORM_CITIES = [
   "Bengaluru",
@@ -22,6 +23,7 @@ export const FORM_CARE_TYPES = [
   "Day Nanny",
   "Live-In Nanny",
   "Japa Nanny",
+  "Flexi-Care",
 ] as const;
 export const FORM_NANNY_AGES = ["20-30", "30-40", "40-50", "50+"] as const;
 export const FORM_LANGUAGES = [
@@ -66,6 +68,8 @@ export type ServicingFormInput = {
   workingHours: string;
   /** HH:MM */
   startTime: string;
+  /** Flexi-Care: how many days were booked. */
+  flexiDays: string;
   specificRequirement: string;
 };
 
@@ -91,15 +95,20 @@ export type ServicingFormValue = {
   joiningDate: string;
   workingHours: string | null;
   startTime: string | null;
+  /** Flexi-Care only: days booked. */
+  flexiDays?: number | null;
   specificRequirement: string | null;
 };
 
 const tenDigits = (v: string) => v.replace(/\D/g, "").slice(-10);
 const validMobile = (v: string) =>
   /^[6-9]\d{9}$/.test(tenDigits(v)) && v.replace(/\D/g, "").length >= 10;
-/** Working hours and start time are asked for day nannies. */
+/** Working hours and start time are asked for day nannies and Flexi-Care. */
 export const asksHours = (f: Pick<ServicingFormInput, "careType">) =>
-  f.careType === "Day Nanny";
+  f.careType === "Day Nanny" || f.careType === "Flexi-Care";
+/** Number of days is asked for Flexi-Care. */
+export const asksDays = (f: Pick<ServicingFormInput, "careType">) =>
+  f.careType === "Flexi-Care";
 
 export type FormErrors = Partial<Record<keyof ServicingFormInput, string>>;
 
@@ -183,10 +192,16 @@ export function checkServicingForm(
     else if (languages.some((l) => l.length > 30))
       errors.languageOther = "Keep each language short.";
     if (
-      f.careType === "Day Nanny" &&
+      asksHours(f) &&
       !(FORM_HOURS as readonly string[]).includes(hours)
     )
       errors.workingHours = "Pick the working hours.";
+    if (asksDays(f)) {
+      const d = Number(f.flexiDays.trim());
+      if (!f.flexiDays.trim() || !Number.isInteger(d) || d < 1)
+        errors.flexiDays = "Enter the number of days.";
+      else if (d > 365) errors.flexiDays = "That looks too many. Check it.";
+    }
     if (!specific)
       errors.specificRequirement =
         "Write any specific requirement (or “None”).";
@@ -213,6 +228,7 @@ export function checkServicingForm(
       joiningDate: f.joiningDate,
       workingHours: dayish && hours ? hours : null,
       startTime: dayish && startTime ? startTime : null,
+      flexiDays: asksDays(f) ? Number(f.flexiDays.trim()) : null,
       specificRequirement: specific,
     },
   };
@@ -223,6 +239,7 @@ export function guessCareType(
   careType: string | null | undefined,
 ): FormCareType | "" {
   const t = (careType ?? "").toLowerCase();
+  if (t.includes("flexi")) return "Flexi-Care";
   if (t.includes("japa") || t.includes("newborn")) return "Japa Nanny";
   if (t.includes("live")) return "Live-In Nanny";
   if (t.includes("day")) return "Day Nanny";
@@ -248,6 +265,7 @@ export const emptyForm = (
   joiningDate: "",
   workingHours: "",
   startTime: "",
+  flexiDays: "",
   specificRequirement: "",
   ...prefill,
 });
@@ -278,6 +296,7 @@ export function formInputFromValue(
     joiningDate: v.joiningDate ?? "",
     workingHours: v.workingHours ?? "",
     startTime: v.startTime ?? "",
+    flexiDays: v.flexiDays ? String(v.flexiDays) : "",
     specificRequirement: v.specificRequirement ?? "",
   });
 }
@@ -328,6 +347,10 @@ export function formInputFromUnknown(raw: unknown): ServicingFormInput {
     workingHours:
       typeof r.workingHours === "string" ? r.workingHours.slice(0, 60) : "",
     startTime: typeof r.startTime === "string" ? r.startTime.slice(0, 10) : "",
+    flexiDays:
+      typeof r.flexiDays === "number" && Number.isFinite(r.flexiDays)
+        ? String(r.flexiDays)
+        : str("flexiDays", 10),
     specificRequirement:
       typeof r.specificRequirement === "string"
         ? r.specificRequirement.slice(0, 2100)

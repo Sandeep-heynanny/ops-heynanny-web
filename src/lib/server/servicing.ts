@@ -241,3 +241,41 @@ export async function saveCaseIntake(
     return "saved" as const;
   });
 }
+
+export type CollectedOutcome = "ok" | "not_found" | "no_case" | "already_full";
+
+/**
+ * Sales collected the rest of the payment after placement: Payment becomes
+ * Full on the case's Servicing form and the enquiry's copy, with who and when.
+ */
+export async function markPaymentCollected(leadId: string, by: string): Promise<CollectedOutcome> {
+  const db = adminDb();
+  const leadRef = db.collection("leads").doc(leadId);
+  return db.runTransaction(async (tx) => {
+    const lead = await tx.get(leadRef);
+    if (!lead.exists) return "not_found";
+    const caseId = lead.get("ops.servicingCaseId");
+    if (typeof caseId !== "string" || !caseId) return "no_case";
+    const caseRef = db.collection("servicing").doc(caseId);
+    const c = await tx.get(caseRef);
+    const was = c.get("intake.payment");
+    if (!c.exists || !c.get("intake")) return "no_case";
+    if (was === "Full") return "already_full";
+    const now = Timestamp.now();
+    tx.update(caseRef, {
+      "intake.payment": "Full",
+      "intake.paymentWas": typeof was === "string" ? was : null,
+      "intake.paymentCollectedAt": now,
+      "intake.paymentCollectedBy": by,
+      updatedAt: now,
+      updatedBy: by,
+    });
+    tx.update(leadRef, {
+      ...(lead.get("ops.servicingForm") ? { "ops.servicingForm.payment": "Full" } : {}),
+      "ops.paymentCollectedAt": now,
+      "ops.paymentCollectedBy": by,
+      updatedAt: now,
+    });
+    return "ok";
+  });
+}

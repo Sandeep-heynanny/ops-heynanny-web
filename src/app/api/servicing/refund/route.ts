@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { HttpError, requireAdmin } from "@/lib/server/admin";
 import { initiateCaseRefund, syncCaseRefund } from "@/lib/server/case-refund";
+import { CASHFREE_REFUNDS_ENABLED } from "@/lib/features";
 import { CashfreeError } from "@/lib/server/cashfree";
 
 export const runtime = "nodejs";
@@ -27,6 +28,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, message });
     }
     if (body?.action !== "initiate") return NextResponse.json({ error: "Unknown action." }, { status: 400 });
+    // Switched off in src/lib/features.ts: the server refuses too, not just the button.
+    if (!CASHFREE_REFUNDS_ENABLED)
+      return NextResponse.json({ error: "Refunds through Cashfree are switched off. Mark the case refunded instead." }, { status: 403 });
 
     const orderId = typeof body.orderId === "string" && body.orderId.length <= 100 ? body.orderId : null;
     const amount = typeof body.amount === "number" ? body.amount : Number.NaN;

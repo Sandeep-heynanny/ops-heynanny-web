@@ -1,5 +1,8 @@
 {
   "projects": {
-    "default": "hey-nanny-web"
-  }
+    "default": "hey-nanny-web",
+    "staging": "hey-nanny-staging"
+  },
+  "targets": {},
+  "etags": {}
 }

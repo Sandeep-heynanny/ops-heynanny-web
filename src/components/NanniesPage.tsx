@@ -3,6 +3,7 @@
 import {
   ArrowDown,
   ArrowUp,
+  Ban,
   Camera,
   Check,
   ChevronRight,
@@ -45,6 +46,14 @@ import { formatDateTime, localISODate } from "@/lib/format";
 import { validGeo, type GeoPlace } from "@/lib/geo";
 import { displayPhone } from "@/lib/types";
 import {
+  BLOCK_NOTE_MAX,
+  BLOCK_REASONS,
+  blockNanny,
+  blockReasonsLabel,
+  unblockNanny,
+  type BlockReason,
+  formatStartDate,
+  upcomingStart,
   checkDocument,
   DOC_KINDS,
   deleteNanny,
@@ -84,7 +93,7 @@ export function NanniesPage({ staff, demo }: { staff: Staff; demo?: Nanny[] }) {
   const isAdmin = canExportNannies(staff.role);
   const canImport = canImportNannies(staff.role);
   const [search, setSearch] = useState("");
-  const [status, setStatus] = useState<"all" | NannyStatus>("all");
+  const [status, setStatus] = useState<"all" | "blocked" | NannyStatus>("all");
   const [roleFilter, setRoleFilter] = useState("all");
   const [language, setLanguage] = useState("all");
   const [city, setCity] = useState("all");
@@ -95,6 +104,12 @@ export function NanniesPage({ staff, demo }: { staff: Staff; demo?: Nanny[] }) {
     key: string;
     id: string | null;
   } | null>(null);
+  // ?nanny=<id> (link from Servicing) opens her record. Read after mount, so
+  // the server and browser render the same first frame.
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("nanny");
+    if (id) setEditing({ key: id, id }); // eslint-disable-line react-hooks/set-state-in-effect
+  }, []);
   const editingNanny = editing?.id
     ? (nannies.find((n) => n.id === editing.id) ?? null)
     : null;
@@ -145,7 +160,10 @@ export function NanniesPage({ staff, demo }: { staff: Staff; demo?: Nanny[] }) {
   const [dupsOnly, setDupsOnly] = useState(false);
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: nannies.length };
-    for (const n of nannies) c[n.status] = (c[n.status] ?? 0) + 1;
+    for (const n of nannies) {
+      c[n.status] = (c[n.status] ?? 0) + 1;
+      if (n.block) c.blocked = (c.blocked ?? 0) + 1;
+    }
     return c;
   }, [nannies]);
   const rows = useMemo(() => {
@@ -154,7 +172,8 @@ export function NanniesPage({ staff, demo }: { staff: Staff; demo?: Nanny[] }) {
     return nannies.filter(
       (n) =>
         (!dupsOnly || dupIds.has(n.id)) &&
-        (status === "all" || n.status === status) &&
+        (status === "all" ||
+          (status === "blocked" ? !!n.block : n.status === status)) &&
         (roleFilter === "all" ||
           (roleFilter === "none" ? !n.role : n.role === roleFilter)) &&
         (language === "all" ||
@@ -190,6 +209,7 @@ export function NanniesPage({ staff, demo }: { staff: Staff; demo?: Nanny[] }) {
         ["City", (n) => n.city ?? ""],
         ["Skills", (n) => n.skills.join(", ")],
         ["Status", (n) => NANNY_STATUS_META[n.status].label],
+        ["Start date", (n) => n.startDate ?? ""],
         ["Placed with", (n) => n.placement?.customerName ?? ""],
         ["Photo URL", (n) => n.photoUrl ?? ""],
       ],
@@ -325,6 +345,7 @@ export function NanniesPage({ staff, demo }: { staff: Staff; demo?: Nanny[] }) {
                 "placed",
                 "on_leave",
                 "inactive",
+                "blocked",
               ] as const
             ).map((s) => (
               <button
@@ -335,7 +356,11 @@ export function NanniesPage({ staff, demo }: { staff: Staff; demo?: Nanny[] }) {
                 onClick={() => setStatus(s)}
                 className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-full px-4 text-sm font-semibold transition-colors ${status === s ? "bg-plum text-milk" : "text-plum hover:bg-plum/5"}`}
               >
-                {s === "all" ? "All" : NANNY_STATUS_META[s].label}
+                {s === "all"
+                  ? "All"
+                  : s === "blocked"
+                    ? "Blocked"
+                    : NANNY_STATUS_META[s].label}
                 <span
                   className={`min-w-6 rounded-full px-1.5 py-0.5 text-xs tabular-nums ${status === s ? "bg-milk/20 text-milk" : "bg-beige text-muted"}`}
                 >
@@ -533,6 +558,20 @@ function NanniesTable({
                     With {n.placement.customerName}
                   </span>
                 )}
+                {upcomingStart(n) && (
+                  <span className="mt-0.5 block whitespace-nowrap text-xs font-semibold text-[#7a5410]">
+                    Starts {formatStartDate(upcomingStart(n)!)}
+                  </span>
+                )}
+                {n.block && (
+                  <span
+                    title={blockReasonsLabel(n.block.reasons)}
+                    className="mt-1 inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-700"
+                  >
+                    <Ban className="size-3" aria-hidden="true" />
+                    Blocked
+                  </span>
+                )}
               </td>
               <td className="px-2 py-2.5 text-muted">
                 <ChevronRight className="size-4" aria-hidden="true" />
@@ -657,12 +696,62 @@ function NannyForm({
       verified: n.verified !== false,
       skills: n.skills.join(", "),
       status: n.status,
+      startDate: n.startDate ?? "",
       notes: n.notes ?? "",
     };
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // Admins: block her with a reason (never suggested or shared again), or unblock.
+  const [blocking, setBlocking] = useState(false);
+  const [blockReasons, setBlockReasons] = useState<BlockReason[]>([]);
+  const [blockNote, setBlockNote] = useState("");
+  const [blockBusy, setBlockBusy] = useState(false);
+  const isAdminUser = staff.role === "admin";
+  const doBlock = async () => {
+    if (!nanny || !blockReasons.length) return;
+    if (blockReasons.includes("other") && !blockNote.trim()) {
+      setError("Write what happened.");
+      return;
+    }
+    setBlockBusy(true);
+    setError(null);
+    try {
+      if (!demo) await blockNanny(nanny.id, blockReasons, blockNote, staff.email);
+      setBlocking(false);
+      setBlockReasons([]);
+      setBlockNote("");
+    } catch (err) {
+      setError(
+        (err as { code?: string }).code === "permission-denied"
+          ? "Only admins can block nannies. Check that the latest Firestore rules are deployed."
+          : (err as Error).message || "Couldn't block her.",
+      );
+    } finally {
+      setBlockBusy(false);
+    }
+  };
+  const doUnblock = async () => {
+    if (!nanny) return;
+    if (
+      !(await confirmDialog({
+        title: `Unblock ${nanny.name}?`,
+        message: "She'll be suggested to families and can be shared again.",
+        confirmLabel: "Unblock",
+      }))
+    )
+      return;
+    setBlockBusy(true);
+    setError(null);
+    try {
+      if (!demo) await unblockNanny(nanny.id, staff.email);
+    } catch {
+      setError("Couldn't unblock her.");
+    } finally {
+      setBlockBusy(false);
+    }
+  };
   // New nannies get their ID up front so the photo can be stored under it.
   const [id] = useState(
     () => nanny?.id ?? (demo ? `demo-${Date.now()}` : newNannyId()),
@@ -789,6 +878,7 @@ function NannyForm({
         verified: f.verified,
         skills: list(f.skills),
         status: f.status,
+        startDate: f.startDate || null,
         notes: f.notes,
         // Placement is managed from the servicing case.
         placement: nanny?.placement ?? null,
@@ -824,6 +914,48 @@ function NannyForm({
   return (
     <SidePanel title={nanny ? nanny.name : "Add nanny"} onClose={onClose}>
       <div className="flex-1 space-y-4 overflow-y-auto px-5 py-5">
+        {nanny?.block && (
+          <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-800 ring-1 ring-red-200">
+            <div className="flex items-start gap-2">
+              <Ban className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+              <div className="min-w-0 flex-1">
+                <p className="font-semibold">
+                  Blocked: {blockReasonsLabel(nanny.block.reasons)}
+                </p>
+                {nanny.block.note && (
+                  <p className="mt-0.5 whitespace-pre-wrap">{nanny.block.note}</p>
+                )}
+                <p className="mt-1 text-xs text-red-700/80">
+                  {[
+                    nanny.block.by ? staffName(nanny.block.by, people) : null,
+                    nanny.block.at?.toDate
+                      ? formatDateTime(nanny.block.at.toDate())
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                  {" · "}Not suggested or shareable with families.
+                </p>
+                {nanny.status === "placed" && nanny.placement?.customerName && (
+                  <p className="mt-1 font-semibold">
+                    She&apos;s still placed with {nanny.placement.customerName}.
+                    Replace her from the servicing case.
+                  </p>
+                )}
+              </div>
+              {isAdminUser && (
+                <button
+                  type="button"
+                  onClick={doUnblock}
+                  disabled={blockBusy}
+                  className="h-8 shrink-0 rounded-full bg-white px-3 text-xs font-semibold text-red-800 ring-1 ring-red-200 hover:bg-red-100 disabled:opacity-50"
+                >
+                  Unblock
+                </button>
+              )}
+            </div>
+          </div>
+        )}
         <div className="flex items-center gap-4">
           <NannyAvatar name={f.name || "?"} photoUrl={shownPhoto} size={72} />
           <div className="min-w-0 flex-1">
@@ -899,6 +1031,42 @@ function NannyForm({
               className={`${input} ${altBad ? "border-red-400" : ""}`}
             />
           </Field>
+          {samePhone.length > 0 && (
+            <div
+              role="alert"
+              className={`col-span-2 rounded-xl px-3 py-2.5 text-sm ring-1 ${phoneTaken ? "bg-red-50 text-red-800 ring-red-200" : "bg-amber-50 text-amber-900 ring-amber-200"}`}
+            >
+              <p className="font-semibold">
+                {phoneTaken
+                  ? "This number is already on another nanny."
+                  : "Another nanny has this number: she may be a duplicate."}
+              </p>
+              <ul className="mt-1 space-y-1">
+                {samePhone.map((o) => (
+                  <li key={o.id} className="flex flex-wrap items-center gap-2">
+                    <span>
+                      {o.name}
+                      {o.createdBy
+                        ? ` · added by ${staffName(o.createdBy, people)}`
+                        : ""}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onOpen(o.id)}
+                      className="font-semibold underline underline-offset-2"
+                    >
+                      Open her
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {!phoneTaken && (
+                <p className="mt-1 text-xs">
+                  Keep one record and ask an admin to delete the other.
+                </p>
+              )}
+            </div>
+          )}
           <Field label="Role">
             <select
               value={f.role}
@@ -958,43 +1126,30 @@ function NannyForm({
               ))}
             </select>
           </Field>
+          <Field label="Start date">
+            <div className="flex items-center gap-1">
+              <input
+                type="date"
+                value={f.startDate}
+                onChange={set("startDate")}
+                className={input}
+              />
+              {f.startDate && (
+                <button
+                  type="button"
+                  onClick={() => setF((x) => ({ ...x, startDate: "" }))}
+                  aria-label="Clear start date"
+                  className="mt-1 grid size-10 shrink-0 place-items-center rounded-full text-muted hover:text-plum"
+                >
+                  <X className="size-4" aria-hidden="true" />
+                </button>
+              )}
+            </div>
+            <span className="mt-1 block text-xs font-normal text-muted">
+              When she can start work. Leave empty if she can start now.
+            </span>
+          </Field>
         </div>
-        {samePhone.length > 0 && (
-          <div
-            role="alert"
-            className={`rounded-xl px-3 py-2.5 text-sm ring-1 ${phoneTaken ? "bg-red-50 text-red-800 ring-red-200" : "bg-amber-50 text-amber-900 ring-amber-200"}`}
-          >
-            <p className="font-semibold">
-              {phoneTaken
-                ? "This number is already on another nanny."
-                : "Another nanny has this number: she may be a duplicate."}
-            </p>
-            <ul className="mt-1 space-y-1">
-              {samePhone.map((o) => (
-                <li key={o.id} className="flex flex-wrap items-center gap-2">
-                  <span>
-                    {o.name}
-                    {o.createdBy
-                      ? ` · added by ${staffName(o.createdBy, people)}`
-                      : ""}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => onOpen(o.id)}
-                    className="font-semibold underline underline-offset-2"
-                  >
-                    Open her
-                  </button>
-                </li>
-              ))}
-            </ul>
-            {!phoneTaken && (
-              <p className="mt-1 text-xs">
-                Keep one record and ask an admin to delete the other.
-              </p>
-            )}
-          </div>
-        )}
         <div className="block text-xs font-semibold text-muted">
           Location (for matching) *
           <PlacePicker
@@ -1133,6 +1288,71 @@ function NannyForm({
           </div>
         )}
       </div>
+      {blocking && nanny && (
+        <div className="space-y-3 border-t border-line bg-red-50/60 px-5 py-4">
+          <p className="text-sm font-semibold text-plum">
+            Block {nanny.name}? She won&apos;t be suggested or shareable with
+            families until an admin unblocks her.
+          </p>
+          <fieldset>
+            <legend className="text-xs font-semibold text-muted">
+              Reasons (pick all that apply)
+            </legend>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {BLOCK_REASONS.map((r) => (
+                <button
+                  key={r.value}
+                  type="button"
+                  aria-pressed={blockReasons.includes(r.value)}
+                  onClick={() =>
+                    setBlockReasons((rs) =>
+                      rs.includes(r.value)
+                        ? rs.filter((x) => x !== r.value)
+                        : [...rs, r.value],
+                    )
+                  }
+                  className={`inline-flex h-8 items-center gap-1 rounded-full px-3 text-xs font-semibold ring-1 ${blockReasons.includes(r.value) ? "bg-red-600 text-white ring-red-600" : "bg-white text-plum ring-line hover:bg-milk"}`}
+                >
+                  {blockReasons.includes(r.value) && (
+                    <Check className="size-3.5" aria-hidden="true" />
+                  )}
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+          <label className="block text-xs font-semibold text-muted">
+            What happened{blockReasons.includes("other") ? "" : " (optional)"}
+            <textarea
+              value={blockNote}
+              onChange={(e) => setBlockNote(e.target.value.slice(0, BLOCK_NOTE_MAX))}
+              rows={2}
+              placeholder="e.g. Family reported she was smoking on the balcony, 12 Nov"
+              className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm font-normal text-plum focus:border-plum focus:outline-none"
+            />
+          </label>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={doBlock}
+              disabled={!blockReasons.length || blockBusy}
+              className="h-10 rounded-full bg-red-600 px-5 text-sm font-semibold text-white disabled:opacity-50"
+            >
+              {blockBusy ? "Blocking…" : "Block nanny"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setBlocking(false);
+                setError(null);
+              }}
+              className="h-10 rounded-full px-4 text-sm font-semibold text-plum"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
       <div className="flex items-center gap-2 border-t border-line px-5 py-4">
         {confirmDelete ? (
           <>
@@ -1190,6 +1410,17 @@ function NannyForm({
               >
                 <MessageCircle className="size-4" aria-hidden="true" />
                 Profile card
+              </button>
+            )}
+            {nanny && isAdminUser && !nanny.block && (
+              <button
+                type="button"
+                onClick={() => setBlocking((b) => !b)}
+                aria-label="Block nanny"
+                title="Block nanny"
+                className={`grid size-11 place-items-center rounded-full text-red-600 hover:bg-red-50 ${blocking ? "bg-red-50" : ""}`}
+              >
+                <Ban className="size-5" aria-hidden="true" />
               </button>
             )}
             {nanny && staff.role === "admin" && (

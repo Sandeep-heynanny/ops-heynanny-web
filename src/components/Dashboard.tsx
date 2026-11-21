@@ -1,7 +1,7 @@
 "use client";
 
 import { Bell, Download, PhoneCall, Plus, Search, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AppHeader } from "@/components/AppHeader";
 import { LeadDetail } from "@/components/LeadDetail";
@@ -10,9 +10,10 @@ import { NewEnquiryPanel } from "@/components/NewEnquiryPanel";
 import type { Staff } from "@/lib/auth";
 import { downloadCsv } from "@/lib/csv";
 import { formatCallback, isSameDay, localISODate, toDate } from "@/lib/format";
+import { alertNew } from "@/lib/alerts";
 import { canReadServicing } from "@/lib/firebase";
 import { findReturning, useLeads } from "@/lib/leads";
-import { useServicingCases } from "@/lib/servicing";
+import { collectDue, useServicingCases } from "@/lib/servicing";
 import { enquiryStaff, useStaffList } from "@/lib/staff-list";
 import {
   careShort,
@@ -25,13 +26,15 @@ import {
   type LeadStatus,
 } from "@/lib/types";
 
-type Tab = LeadStatus | "all";
+/** "collect": nanny placed, full payment still to collect. */
+type Tab = LeadStatus | "collect" | "all";
 type Range = "all" | "today" | "7d" | "30d";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "new", label: "New" },
   { id: "contacted", label: "Contacted" },
   { id: "converted", label: "Converted" },
+  { id: "collect", label: "Collect payment" },
   { id: "not_interested", label: "Not interested" },
   { id: "all", label: "All" },
 ];
@@ -59,6 +62,18 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
     () => new Map(cases.map((c) => [c.id, c])),
     [cases],
   );
+  // Nanny placed but the Servicing form says Half / Pre / Token: sales collect the rest.
+  const needsCollect = useCallback(
+    (l: Lead) => {
+      const c = l.ops?.servicingCaseId ? caseById.get(l.ops.servicingCaseId) : undefined;
+      return !!c && collectDue(c);
+    },
+    [caseById],
+  );
+  const collectAll = useMemo(() => leads.filter(needsCollect), [leads, needsCollect]);
+  const myCollect = collectAll.filter(
+    (l) => l.ops?.assignedTo?.toLowerCase() === staff.email.toLowerCase(),
+  ).length;
   // Enquiries from people who converted (paid) before.
   const returning = useMemo(() => findReturning(leads), [leads]);
 
@@ -73,6 +88,24 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [addingLead, setAddingLead] = useState(false);
   const [now, setNow] = useState(() => new Date());
+
+  // Sound + desktop pop-up when new enquiries arrive (not ones I added myself).
+  const lastAlerted = useRef<string | null>(null);
+  useEffect(() => {
+    const fresh = arrivals.filter((l) => l.ops?.createdBy?.toLowerCase() !== staff.email.toLowerCase());
+    const top = fresh[0];
+    if (!top || top.id === lastAlerted.current) return;
+    lastAlerted.current = top.id;
+    alertNew(
+      fresh.length === 1 ? "New enquiry" : `${fresh.length} new enquiries`,
+      [top.name, careShort(top.careType), top.area].filter(Boolean).join(" · "),
+      () => {
+        setTab("new");
+        setSelectedId(top.id);
+      },
+    );
+  }, [arrivals, staff.email]);
+
 
   // Keep "12 min ago" labels fresh.
   useEffect(() => {
@@ -248,21 +281,26 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
       contacted: 0,
       converted: 0,
       not_interested: 0,
+      collect: 0,
       all: filtered.length,
     };
-    for (const l of filtered) counts[l.status] = (counts[l.status] ?? 0) + 1;
+    for (const l of filtered) {
+      counts[l.status] = (counts[l.status] ?? 0) + 1;
+      if (needsCollect(l)) counts.collect += 1;
+    }
     return counts;
-  }, [filtered]);
+  }, [filtered, needsCollect]);
 
   const visible = useMemo(() => {
     if (tab === "all") return filtered;
+    if (tab === "collect") return filtered.filter(needsCollect);
     const list = filtered.filter((l) => l.status === tab);
     if (tab !== "contacted") return list;
     // Earliest call back first; leads without one keep their order at the end.
     const t = (l: Lead) =>
       toDate(l.ops?.callbackAt)?.getTime() ?? Number.POSITIVE_INFINITY;
     return [...list].sort((a, b) => t(a) - t(b));
-  }, [filtered, tab]);
+  }, [filtered, tab, needsCollect]);
   const selected = leads.find((l) => l.id === selectedId) ?? null;
   const filtersOn =
     search ||
@@ -361,6 +399,32 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
             onClick={() => setTab("converted")}
           />
         </section>
+
+        {collectAll.length > 0 && (
+          <div
+            role="alert"
+            className="mt-4 flex flex-wrap items-center gap-3 rounded-[20px] bg-red-50 px-4 py-3 text-sm text-red-800 ring-1 ring-red-200"
+          >
+            <span className="flex-1">
+              <b>
+                {collectAll.length} {collectAll.length === 1 ? "customer has" : "customers have"} a nanny placed but{" "}
+                {collectAll.length === 1 ? "hasn't" : "haven't"} paid in full
+                {myCollect ? ` (${myCollect} assigned to you)` : ""}.
+              </b>{" "}
+              Collect the rest and mark it on the enquiry.
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setTab("collect");
+                setAssignee(myCollect ? "me" : "all");
+              }}
+              className="h-9 rounded-full bg-red-700 px-4 text-sm font-semibold text-white hover:bg-red-800"
+            >
+              {myCollect ? "Show mine" : collectAll.length === 1 ? "Show it" : "Show them"}
+            </button>
+          </div>
+        )}
 
         {/* Toolbar */}
         <section
@@ -470,7 +534,7 @@ export function Dashboard({ staff, demo }: { staff: Staff; demo?: Lead[] }) {
                     className={`min-w-6 rounded-full px-1.5 py-0.5 text-xs tabular-nums ${
                       active
                         ? "bg-milk/20 text-milk"
-                        : t.id === "new" && tabCounts.new
+                        : (t.id === "new" && tabCounts.new) || (t.id === "collect" && tabCounts.collect)
                           ? "bg-rose text-white"
                           : "bg-beige text-muted"
                     }`}
@@ -617,6 +681,7 @@ function tabEmptyHint(tab: Tab, filtersOn: boolean) {
   if (filtersOn) return "No enquiries match these filters.";
   if (tab === "new") return "No new enquiries. You're all caught up.";
   if (tab === "all") return "No enquiries yet.";
+  if (tab === "collect") return "No payments to collect. Every placed customer has paid in full.";
   return "Nothing here yet.";
 }
 

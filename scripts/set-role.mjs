@@ -27,7 +27,8 @@ import { applicationDefault, cert, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 
-const PROJECT_ID = "hey-nanny-web";
+// FIREBASE_PROJECT=hey-nanny-staging npm run role -- ... manages staging instead.
+const PROJECT_ID = process.env.FIREBASE_PROJECT || "hey-nanny-web";
 const DOMAIN = "@heynanny.in";
 const ROLES = ["sales", "servicing", "supply", "manager", "admin", "none"];
 const STAFF = ROLES.filter((r) => r !== "none");

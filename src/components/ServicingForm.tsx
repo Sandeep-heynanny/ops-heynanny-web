@@ -298,8 +298,22 @@ export function ServicingForm({
 
         {hours && (
           <>
+            {f.careType === "Flexi-Care" && (
+              <Field label="Number of days * (Flexi-Care)" error={errors.flexiDays}>
+                <input
+                  type="number"
+                  min={1}
+                  max={365}
+                  inputMode="numeric"
+                  value={f.flexiDays}
+                  onChange={(e) => set("flexiDays", e.target.value)}
+                  placeholder="e.g. 5"
+                  className={`${input(errors.flexiDays)} block sm:max-w-[200px]`}
+                />
+              </Field>
+            )}
             <Choice
-              label="Working hours * (day nanny)"
+              label="Working hours *"
               error={errors.workingHours}
             >
               {FORM_HOURS.map((h) => (
@@ -313,7 +327,7 @@ export function ServicingForm({
               ))}
             </Choice>
             <Field
-              label="Preferred start time (day nanny)"
+              label="Preferred start time"
               error={errors.startTime}
             >
               <input

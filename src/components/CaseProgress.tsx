@@ -10,6 +10,7 @@ import { Check } from "lucide-react";
 import {
   bucketMeta,
   caseBucket,
+  refunded,
   caseTimeline,
   needsForm,
   travelStatus,
@@ -54,6 +55,7 @@ export function formatTime(hm: string) {
 export function requirementLine(r: Intake) {
   return [
     r.careType,
+    r.flexiDays ? `${r.flexiDays} day${r.flexiDays === 1 ? "" : "s"}` : null,
     r.joiningDate ? `joins ${formatDay(r.joiningDate)}` : null,
     r.nannyAge?.length ? `${r.nannyAge.join(", ")} yrs` : null,
     r.languages?.length ? r.languages.join(", ") : null,
@@ -67,7 +69,10 @@ export function requirementLine(r: Intake) {
 }
 
 export function StagePill({ c }: { c: ServicingCase }) {
-  const m = bucketMeta(caseBucket(c));
+  // A cancelled case whose refund is done reads "Refunded", not just "Cancelled".
+  const m = refunded(c)
+    ? { short: "Refunded", tone: "bg-[#dcefe1] text-success", dot: "bg-success" }
+    : bucketMeta(caseBucket(c));
   return (
     <span
       className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${m.tone}`}

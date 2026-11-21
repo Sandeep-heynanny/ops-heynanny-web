@@ -4,11 +4,13 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3001",
+    "dev:staging": "node scripts/with-env.mjs .env.staging next dev -p 3001",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
     "role": "node scripts/set-role.mjs",
-    "clear-leads": "node scripts/clear-leads.mjs"
+    "clear-leads": "node scripts/clear-leads.mjs",
+    "copy-to-staging": "node scripts/copy-to-staging.mjs"
   },
   "dependencies": {
     "firebase": "^12.19.0",

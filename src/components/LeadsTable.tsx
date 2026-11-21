@@ -15,6 +15,7 @@ import type { Returning } from "@/lib/leads";
 import {
   bucketMeta,
   caseBucket,
+  collectDue,
   type ServicingCase,
 } from "@/lib/servicing";
 import { staffName, type StaffMember } from "@/lib/staff-list";
@@ -182,6 +183,14 @@ export function LeadsTable({
                           })()}
                         </span>
                       ))}
+                    {(() => {
+                      const c = l.ops?.servicingCaseId ? cases?.get(l.ops.servicingCaseId) : undefined;
+                      return c && collectDue(c) ? (
+                        <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[0.7rem] font-semibold text-red-700 ring-1 ring-red-200">
+                          ₹ Collect payment · {c.intake?.payment}
+                        </span>
+                      ) : null;
+                    })()}
                   </div>
                 </td>
                 <td className="hidden max-w-[160px] truncate px-4 py-3 text-xs text-muted lg:table-cell">

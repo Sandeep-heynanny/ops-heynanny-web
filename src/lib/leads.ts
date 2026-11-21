@@ -136,6 +136,24 @@ export async function saveLeadUpdate(
  * Hand a converted enquiry to the servicing team (creates or links their case on
  * the server; the ops team can't write servicing data directly).
  */
+/** Sales collected the rest of the payment after placement (Payment → Full on the case). */
+export async function markPaymentCollected(lead: Pick<Lead, "id">): Promise<void> {
+  const user = auth().currentUser;
+  if (!user) throw new Error("Not signed in");
+  const res = await fetch("/api/servicing/payment-collected", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${await user.getIdToken()}`,
+    },
+    body: JSON.stringify({ leadId: lead.id }),
+  });
+  if (!res.ok) {
+    const j = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(j?.error ?? "Couldn't save. Try again.");
+  }
+}
+
 export async function sendToServicing(
   lead: Pick<Lead, "id">,
   form: ServicingFormValue,

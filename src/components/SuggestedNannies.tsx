@@ -5,13 +5,14 @@ import { useMemo, useState } from "react";
 
 import { NannyAvatar } from "@/components/NannyAvatar";
 import { suggestNannies } from "@/lib/matching";
-import { NANNY_STATUS_META, type Nanny } from "@/lib/nannies";
+import { formatStartDate, NANNY_STATUS_META, upcomingStart, type Nanny } from "@/lib/nannies";
 import type { Intake } from "@/lib/servicing";
+import { displayPhone } from "@/lib/types";
 
 /** How many suggestions to show (Sandeep, 2026-11-19: 5 for now). */
 const SHOW = 5;
-/** Day Nanny: how far from the customer's map pin. */
-const DAY_MAX_KM = 5;
+/** Day Nanny: how far from the customer's map pin (Sandeep, 2026-11-20: 3 km for now; was 5). */
+const DAY_MAX_KM = 3;
 
 /**
  * Step 1 on a case: the best-matching nannies from the Servicing form, with
@@ -84,19 +85,18 @@ export function SuggestedNannies({
           No available nannies match yet. Use the list below to pick from everyone.
         </p>
       ) : (
-        <ul className="mt-2 divide-y divide-line">
+        <ul role="listbox" aria-multiselectable className="mt-2 divide-y divide-line">
           {top.map((s) => {
             const n = s.nanny;
             const on = picked.includes(n.id);
             return (
-              <li key={n.id}>
-                <button
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => toggle(n.id)}
-                  aria-pressed={on}
-                  className="flex w-full items-start gap-3 py-2.5 text-left hover:bg-milk/50 disabled:opacity-50"
-                >
+              <li
+                key={n.id}
+                onClick={() => !disabled && toggle(n.id)}
+                aria-selected={on}
+                role="option"
+                className={`flex cursor-pointer items-start gap-3 py-2.5 hover:bg-milk/50 ${disabled ? "pointer-events-none opacity-50" : ""}`}
+              >
                   <span
                     className={`mt-1 grid size-5 shrink-0 place-items-center rounded border ${on ? "border-plum bg-plum text-milk" : "border-line bg-white"}`}
                   >
@@ -105,7 +105,10 @@ export function SuggestedNannies({
                   <NannyAvatar name={n.name} photoUrl={n.photoUrl} size={34} />
                   <span className="min-w-0 flex-1">
                     <span className="flex flex-wrap items-center gap-x-2 text-sm font-semibold text-plum">
-                      {n.name}
+                      <NannyLink id={n.id} name={n.name} />
+                      {n.phone && (
+                        <span className="text-xs font-medium tabular-nums text-plum/80">{displayPhone(n.phone)}</span>
+                      )}
                       <span className="text-xs font-normal text-muted">
                         {[n.role, n.experienceYears !== null ? `${n.experienceYears} yrs exp` : null].filter(Boolean).join(" · ")}
                       </span>
@@ -116,6 +119,14 @@ export function SuggestedNannies({
                       )}
                     </span>
                     <span className="mt-1 flex flex-wrap gap-1.5 text-[0.72rem] font-semibold">
+                      {upcomingStart(n) && (
+                        <span
+                          className={`rounded-full px-2 py-0.5 ${intake.joiningDate && upcomingStart(n)! > intake.joiningDate ? "bg-red-50 text-red-700" : "bg-[#fbecc8] text-[#7a5410]"}`}
+                        >
+                          Starts {formatStartDate(upcomingStart(n)!)}
+                          {intake.joiningDate && upcomingStart(n)! > intake.joiningDate ? " · after joining date" : ""}
+                        </span>
+                      )}
                       {s.km !== null && (
                         <span className="inline-flex items-center gap-1 rounded-full bg-[#e3edfd] px-2 py-0.5 text-[#1a56c4]">
                           <MapPin className="size-3" aria-hidden="true" />
@@ -140,7 +151,6 @@ export function SuggestedNannies({
                       ) : null}
                     </span>
                   </span>
-                </button>
               </li>
             );
           })}
@@ -154,5 +164,21 @@ export function SuggestedNannies({
         </p>
       )}
     </div>
+  );
+}
+
+/** Her name, opening her record on the Nannies page in a new tab (doesn't tick her). */
+export function NannyLink({ id, name }: { id: string; name: string }) {
+  return (
+    <a
+      href={`/nannies?nanny=${encodeURIComponent(id)}`}
+      target="_blank"
+      rel="noopener"
+      onClick={(e) => e.stopPropagation()}
+      title="Open her profile"
+      className="underline decoration-line underline-offset-2 hover:decoration-plum"
+    >
+      {name}
+    </a>
   );
 }

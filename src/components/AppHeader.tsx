@@ -1,9 +1,10 @@
 "use client";
 
-import { LogOut } from "lucide-react";
+import { BellRing, LogOut, Volume2, VolumeX } from "lucide-react";
 import Link from "next/link";
 
 import { Logo } from "@/components/Logo";
+import { askDesktopPermission, playChime, setMuted, useAlertSettings } from "@/lib/alerts";
 import type { Staff } from "@/lib/auth";
 import { useAuth } from "@/lib/auth";
 import {
@@ -24,6 +25,7 @@ export function AppHeader({
   active: Section;
 }) {
   const { signOut } = useAuth();
+  const alerts = useAlertSettings();
   const links: { id: Section; href: string; label: string }[] = [
     ...(canSeeEnquiries(staff.role)
       ? [{ id: "enquiries" as const, href: "/", label: "Enquiries" }]
@@ -66,6 +68,30 @@ export function AppHeader({
           </nav>
         )}
         <div className="ml-auto flex items-center gap-3">
+          {alerts.permission === "default" && (
+            <button
+              type="button"
+              onClick={() => void askDesktopPermission()}
+              className="hidden h-9 items-center gap-1.5 rounded-full bg-paper px-3 text-xs font-semibold text-plum ring-1 ring-line hover:bg-white md:inline-flex"
+              title="Get a pop-up on your computer for new work, even when this tab isn't open in front"
+            >
+              <BellRing className="size-4" aria-hidden="true" />
+              Turn on pop-ups
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              setMuted(!alerts.muted);
+              if (alerts.muted) window.setTimeout(playChime, 50);
+            }}
+            aria-pressed={!alerts.muted}
+            aria-label={alerts.muted ? "Sound off. Turn on alert sound" : "Sound on. Mute alert sound"}
+            title={alerts.muted ? "Alert sound off" : "Alert sound on"}
+            className="grid size-9 place-items-center rounded-full bg-paper text-plum ring-1 ring-line hover:bg-white"
+          >
+            {alerts.muted ? <VolumeX className="size-4" aria-hidden="true" /> : <Volume2 className="size-4" aria-hidden="true" />}
+          </button>
           <div className="hidden text-right sm:block">
             <p className="text-sm font-semibold leading-tight text-plum">
               {staff.name}

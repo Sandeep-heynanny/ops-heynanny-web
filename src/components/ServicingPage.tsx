@@ -3,6 +3,7 @@
 import {
   ArrowRight,
   Baby,
+  Bell,
   Building2,
   CalendarClock,
   CalendarDays,
@@ -22,6 +23,7 @@ import {
   Ticket,
   Trash2,
   Undo2,
+  X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -35,12 +37,13 @@ import {
   StagePill,
 } from "@/components/CaseProgress";
 import { confirmDialog } from "@/components/ConfirmDialog";
+import { alertNew } from "@/lib/alerts";
 import { UpdatedBy } from "@/components/UpdatedBy";
 import { AppHeader } from "@/components/AppHeader";
 import { NannyAvatar } from "@/components/NannyAvatar";
 import { profileData } from "@/components/ProfileCard";
 import { SidePanel } from "@/components/NanniesPage";
-import { SuggestedNannies } from "@/components/SuggestedNannies";
+import { NannyLink, SuggestedNannies } from "@/components/SuggestedNannies";
 import type { Staff } from "@/lib/auth";
 import {
   formatDateTime,
@@ -81,6 +84,7 @@ import {
   liveCfRefunds,
   syncCaseRefund,
   refundDue,
+  refunded,
   reopenCase,
   saveNotes,
   STAGE_META,
@@ -124,7 +128,11 @@ import type { ProfileItem } from "@/lib/profile-image";
 import { displayPhone, TEAM_LEAD_SOURCES } from "@/lib/types";
 import { Timestamp } from "firebase/firestore";
 
-type Tab = "active" | "requests" | Bucket | "refunds" | "all";
+import { CASHFREE_REFUNDS_ENABLED } from "@/lib/features";
+import { interviewChange, istWhen, type InterviewEvent } from "@/lib/interview-push";
+import { notifyCustomer, type NotifyResult } from "@/lib/notify";
+
+type Tab = "active" | "requests" | Bucket | "refunds" | "refunded" | "all";
 const TABS: { id: Tab; label: string }[] = [
   { id: "active", label: "Active" },
   { id: "requests", label: "Interview requests" },
@@ -139,6 +147,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "on_hold", label: "On hold" },
   { id: "cancelled", label: "Cancelled" },
   { id: "refunds", label: "Refunds due" },
+  { id: "refunded", label: "Refunded" },
   { id: "all", label: "All" },
 ];
 /** Still being worked on: everything up to her joining the family. */
@@ -172,18 +181,46 @@ export function ServicingPage({
   /** "all", a FORM_CARE_TYPES value, or "none" (care type not set). */
   const [nannyType, setNannyType] = useState("all");
   const [search, setSearch] = useState("");
-  // ?case=<id> opens that case (link from the enquiry drawer).
-  const [openId, setOpenId] = useState<string | null>(() =>
-    typeof window === "undefined"
-      ? null
-      : new URLSearchParams(window.location.search).get("case"),
-  );
+  const [openId, setOpenId] = useState<string | null>(null);
+  // ?case=<id> opens that case (link from the enquiry drawer). Read after
+  // mount, so the server and browser render the same first frame.
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("case");
+    if (id) setOpenId(id);
+  }, []);
   const [creating, setCreating] = useState(false);
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const t = window.setInterval(() => setNow(new Date()), 60_000);
     return () => window.clearInterval(t);
   }, []);
+
+  // New customers from sales (Servicing form submitted after this page opened):
+  // chime, desktop pop-up and a toast (Sandeep, 2026-11-20). Not ones I submitted.
+  const handedAt = (c: ServicingCase) => toDate(c.intake?.submittedAt as Timestamp | null)?.getTime() ?? 0;
+  const seenHandover = useRef<Map<string, number> | null>(null);
+  const [handovers, setHandovers] = useState<ServicingCase[]>([]);
+  useEffect(() => {
+    if (loading) return;
+    const seen = seenHandover.current;
+    const map = new Map(cases.map((c) => [c.id, handedAt(c)]));
+    seenHandover.current = map;
+    if (!seen) return; // first load: nothing is "new"
+    const fresh = cases.filter(
+      (c) =>
+        c.intake &&
+        handedAt(c) > (seen.get(c.id) ?? 0) &&
+        c.intake.submittedBy?.toLowerCase() !== staff.email.toLowerCase(),
+    );
+    if (!fresh.length) return;
+    setHandovers((h) => [...fresh, ...h.filter((x) => !fresh.some((f) => f.id === x.id))].slice(0, 5));
+    const top = fresh[0]!;
+    alertNew(
+      fresh.length === 1 ? "New customer from sales" : `${fresh.length} new customers from sales`,
+      [top.customer.name, top.intake?.careType, top.intake?.location].filter(Boolean).join(" · "),
+      () => setOpenId(top.id),
+    );
+  }, [cases, loading, staff.email]);
 
   const newCount = cases.filter((c) => c.stage === "new").length;
   useEffect(() => {
@@ -224,10 +261,12 @@ export function ServicingPage({
       all: filtered.length,
       active: 0,
       refunds: 0,
+      refunded: 0,
       requests: 0,
     };
     for (const c of filtered) {
       if (refundDue(c)) out.refunds! += 1;
+      if (refunded(c)) out.refunded! += 1;
       if (openRequests(c).length) out.requests! += 1;
       const b = caseBucket(c);
       out[b] = (out[b] ?? 0) + 1;
@@ -240,6 +279,8 @@ export function ServicingPage({
       ? filtered
       : tab === "refunds"
         ? filtered.filter(refundDue)
+        : tab === "refunded"
+          ? filtered.filter(refunded)
         : tab === "requests"
           ? filtered
               .filter((c) => openRequests(c).length)
@@ -252,7 +293,7 @@ export function ServicingPage({
             ? filtered.filter((c) => ACTIVE.includes(caseBucket(c)))
             : filtered.filter((c) => caseBucket(c) === tab);
   const agingCounts = useMemo(() => {
-    const out: Record<AgingId, number> = { priority: 0, two: 0, one: 0, today: 0 };
+    const out: Record<AgingId, number> = { priority: 0, three: 0, two: 0, one: 0, today: 0 };
     for (const c of filtered) {
       const a = agingOf(caseAgeDays(c, now));
       if (a) out[a] += 1;
@@ -403,7 +444,7 @@ export function ServicingPage({
           </div>
         </section>
 
-        <section aria-label="Aging" className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
+        <section aria-label="Aging" className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-5">
           {AGING_ORDER.map((id) => {
             const m = AGING_META[id];
             const on = aging === id;
@@ -492,6 +533,43 @@ export function ServicingPage({
         />
       )}
 
+      {/* New customer from sales */}
+      {handovers.length > 0 && (
+        <div className="toast-in fixed bottom-5 left-1/2 z-40 w-[min(440px,calc(100vw-2rem))] -translate-x-1/2">
+          <div className="flex items-center gap-3 rounded-[18px] bg-plum px-4 py-3 text-milk shadow-lift" role="status">
+            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-rose/30">
+              <Bell className="size-4" aria-hidden="true" />
+            </span>
+            <button
+              type="button"
+              className="min-w-0 flex-1 text-left"
+              onClick={() => {
+                setOpenId(handovers[0]!.id);
+                setHandovers([]);
+              }}
+            >
+              <p className="text-sm font-bold">
+                {handovers.length === 1 ? "New customer from sales" : `${handovers.length} new customers from sales`}
+              </p>
+              <p className="truncate text-xs text-blush/90">
+                {[handovers[0]!.customer.name, handovers[0]!.intake?.careType, handovers[0]!.intake?.location]
+                  .filter(Boolean)
+                  .join(" · ")}{" "}
+                · tap to open
+              </p>
+            </button>
+            <button
+              type="button"
+              onClick={() => setHandovers([])}
+              aria-label="Dismiss"
+              className="grid size-8 place-items-center rounded-full hover:bg-white/10"
+            >
+              <X className="size-4" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {creating && (
         <NewCasePanel
           staff={staff}
@@ -525,6 +603,7 @@ function avatarTone(name: string) {
  */
 function caseNannyType(c: ServicingCase): string {
   const t = (c.intake?.careType || c.careType || "").toLowerCase();
+  if (t.includes("flexi")) return "Flexi-Care";
   if (t.includes("japa")) return "Japa Nanny";
   if (t.includes("live")) return "Live-In Nanny";
   if (t.includes("day")) return "Day Nanny";
@@ -792,19 +871,48 @@ function CaseDetail({
   );
 
   /** Every change saves straight away; the list updates live. */
-  const run = async (fn: () => Promise<void>) => {
+  /** Saves; resolves true when it worked. */
+  const run = async (fn: () => Promise<void>): Promise<boolean> => {
     setBusy(true);
     setError(null);
     try {
       if (!demo) await fn();
+      return true;
     } catch (e) {
       setError(
         (e as { code?: string }).code === "permission-denied"
           ? "You don't have permission to change this case."
           : "Couldn't save. Check your connection and try again.",
       );
+      return false;
     } finally {
       setBusy(false);
+    }
+  };
+  // Interview updates go to the customer's app as a push notification.
+  const [pushNote, setPushNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const sendPush = async (
+    nannyId: string,
+    event: InterviewEvent,
+    at: Date | null,
+    note?: string,
+  ): Promise<NotifyResult | null> => {
+    if (demo) return null;
+    try {
+      const r = await notifyCustomer({ caseId: c.id, nannyId, event, at, note });
+      if (!r.skipped)
+        setPushNote(
+          r.sent
+            ? { ok: true, text: "Customer notified in the app." }
+            : {
+                ok: false,
+                text: "The customer doesn't have app notifications on. Tell them on WhatsApp.",
+              },
+        );
+      return r;
+    } catch (e) {
+      setPushNote({ ok: false, text: (e as Error).message });
+      return null;
     }
   };
   // Cashfree refunds (admins): show the server's message, success or not.
@@ -832,6 +940,18 @@ function CaseDetail({
     setProposals(
       c.proposals.map((p) => (p.nannyId === nannyId ? { ...p, ...patch } : p)),
     );
+  /** Saves, then tells the customer if their interview was booked, moved or cancelled. */
+  const patchAndNotify = async (p: Proposal, patch: Partial<Proposal>) => {
+    if (!(await patchProposal(p.nannyId, patch))) return;
+    const after = { ...p, ...patch };
+    const event = interviewChange(p, after);
+    if (event)
+      void sendPush(
+        p.nannyId,
+        event,
+        (event === "cancelled" ? p.interviewAt : after.interviewAt)?.toDate() ?? null,
+      );
+  };
 
   /** Profile card image (one per nanny): preview, then WhatsApp / download. */
   const share = (ps: Proposal[]) =>
@@ -1132,6 +1252,7 @@ function CaseDetail({
                     customer={c.customer}
                     onRequest={async (action) => {
                       if (demo) return;
+                      const req = c.interviewRequests[p.nannyId];
                       try {
                         if (action === "confirm")
                           await confirmRequest(c, p.nannyId, staff.email);
@@ -1144,13 +1265,23 @@ function CaseDetail({
                           );
                       } catch {
                         alert("Couldn't update the request. Try again.");
+                        return;
                       }
+                      if (action === "confirm" || action === "unavailable")
+                        void sendPush(
+                          p.nannyId,
+                          action === "confirm" ? "confirmed" : "unavailable",
+                          req?.at?.toDate() ?? null,
+                        );
                     }}
+                    onSuggest={(at, note) =>
+                      sendPush(p.nannyId, "suggested", at, note)
+                    }
                     current={byId.get(p.nannyId)}
                     placed={c.placement?.nannyId === p.nannyId}
                     disabled={busy}
                     onShare={() => share([p])}
-                    onPatch={(patch) => patchProposal(p.nannyId, patch)}
+                    onPatch={(patch) => void patchAndNotify(p, patch)}
                     onRemove={async () => {
                       const started =
                         p.interviewAt || p.outcome || p.shortlisted;
@@ -1310,6 +1441,13 @@ function CaseDetail({
           )}
           {busy && <span className="text-xs text-muted">Saving…</span>}
           {error && <span className="text-xs text-red-700">{error}</span>}
+          {pushNote && (
+            <span
+              className={`text-xs ${pushNote.ok ? "text-success" : "text-[#9a6417]"}`}
+            >
+              {pushNote.text}
+            </span>
+          )}
         </div>
         <UpdatedBy by={c.updatedBy} at={toDate(c.updatedAt)} people={people} />
       </div>
@@ -1392,6 +1530,7 @@ function RequirementsBox({
     ["Joining date", intake.joiningDate ? formatDay(intake.joiningDate) : null],
     ["Nanny age", chips(intake.nannyAge?.map((a) => `${a} yrs`))],
     ["Languages", chips(intake.languages)],
+    ["Days (Flexi-Care)", intake.flexiDays ? `${intake.flexiDays} day${intake.flexiDays === 1 ? "" : "s"}` : null],
     ["Working hours", intake.workingHours],
     ["Start time", intake.startTime ? formatTime(intake.startTime) : null],
     ["Baby age", intake.babyAge],
@@ -1554,6 +1693,8 @@ function NannyPicker({
     const s = q.trim().toLowerCase();
     return nannies
       .filter((n) => !exclude.has(n.id))
+      // Blocked nannies are never offered, even with "show all".
+      .filter((n) => !n.block)
       .filter(
         (n) =>
           showAll || n.status === "available" || n.status === "interviewing",
@@ -1688,7 +1829,12 @@ function NannyPicker({
                   <NannyAvatar name={n.name} photoUrl={n.photoUrl} size={34} />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-semibold text-plum">
-                      {n.name}
+                      <NannyLink id={n.id} name={n.name} />
+                      {n.phone && (
+                        <span className="ml-2 text-xs font-medium tabular-nums text-plum/80">
+                          {displayPhone(n.phone)}
+                        </span>
+                      )}
                     </p>
                     <p className="truncate text-xs text-muted">
                       {[
@@ -1732,6 +1878,7 @@ function ProposalRow({
   request,
   customer,
   onRequest,
+  onSuggest,
   current,
   placed,
   disabled,
@@ -1746,6 +1893,8 @@ function ProposalRow({
   onRequest: (
     action: "confirm" | "checking" | "unavailable" | "new",
   ) => Promise<void>;
+  /** Push another time to the customer's app. */
+  onSuggest: (at: Date, note: string) => Promise<NotifyResult | null>;
   current: Nanny | undefined;
   placed: boolean;
   disabled: boolean;
@@ -1806,7 +1955,9 @@ function ProposalRow({
         />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="font-semibold text-plum">{p.nanny.name}</p>
+            <p className="font-semibold text-plum">
+              <NannyLink id={p.nannyId} name={p.nanny.name} />
+            </p>
             {placed && (
               <span className="rounded-full bg-[#dcefe1] px-2 py-0.5 text-[0.68rem] font-semibold text-success">
                 Placed
@@ -1846,6 +1997,7 @@ function ProposalRow({
               customer={customer}
               disabled={disabled}
               onRequest={onRequest}
+              onSuggest={onSuggest}
             />
           )}
 
@@ -1963,6 +2115,7 @@ function RequestCard({
   customer,
   disabled,
   onRequest,
+  onSuggest,
 }: {
   request: InterviewRequest;
   nannyName: string;
@@ -1971,8 +2124,32 @@ function RequestCard({
   onRequest: (
     action: "confirm" | "checking" | "unavailable" | "new",
   ) => Promise<void>;
+  onSuggest: (at: Date, note: string) => Promise<NotifyResult | null>;
 }) {
   const [busy, setBusy] = useState(false);
+  // "Suggest other": pick a time and push it to the customer's app.
+  const [suggesting, setSuggesting] = useState(false);
+  const [otherWhen, setOtherWhen] = useState("");
+  const [otherNote, setOtherNote] = useState("");
+  const [noApp, setNoApp] = useState<Date | null>(null);
+  const otherAt = fromLocalInput(otherWhen);
+  // Close enough for "is it in the future?"; the server checks again.
+  const [shownAt] = useState(() => Date.now());
+  const otherOk = !!otherAt && otherAt.getTime() > shownAt;
+  const sendOther = async () => {
+    if (!otherAt || !otherOk) return;
+    setBusy(true);
+    const r = await onSuggest(otherAt, otherNote);
+    setBusy(false);
+    if (!r) return;
+    setNoApp(r.sent ? null : otherAt);
+    if (r.sent) {
+      setSuggesting(false);
+      setOtherWhen("");
+      setOtherNote("");
+    }
+  };
+  const ts = request.teamSuggested;
   const at = request.at.toDate();
   const when = requestWhen(at);
   // When the drawer opened is close enough for "has this time passed?".
@@ -2036,19 +2213,80 @@ function RequestCard({
             She isn&apos;t free then
           </button>
         )}
-        <a
-          href={whatsappLink(
-            customer.phone,
-            `Hi ${first}, thanks for choosing a time to meet ${nannyName}. She isn't free on ${when}. Would ___ work for you instead?`,
-          )}
-          target="_blank"
-          rel="noopener noreferrer"
+        <button
+          type="button"
+          disabled={off}
+          aria-expanded={suggesting}
+          onClick={() => setSuggesting((x) => !x)}
           className={`${btn} bg-white text-[#1a7f45] ring-1 ring-line hover:bg-[#e7f6ec]`}
         >
-          <MessageCircle className="size-3.5" aria-hidden="true" /> Suggest
+          <CalendarClock className="size-3.5" aria-hidden="true" /> Suggest
           other
-        </a>
+        </button>
       </div>
+      {suggesting && (
+        <div className="mt-2 rounded-lg bg-white p-3 ring-1 ring-line">
+          <p className="text-xs font-semibold text-plum">
+            Send the customer another time to meet {nannyName}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <input
+              type="datetime-local"
+              value={otherWhen}
+              onChange={(e) => setOtherWhen(e.target.value)}
+              aria-label="Suggested time"
+              className="h-9 rounded-lg border border-line bg-white px-2 text-sm text-plum"
+            />
+            <input
+              value={otherNote}
+              onChange={(e) => setOtherNote(e.target.value.slice(0, 200))}
+              placeholder="Note (optional)"
+              aria-label="Note for the customer"
+              className="h-9 min-w-48 flex-1 rounded-lg border border-line bg-white px-2 text-sm text-plum"
+            />
+            <button
+              type="button"
+              disabled={off || !otherOk}
+              onClick={() => void sendOther()}
+              className={`${btn} bg-plum text-milk`}
+            >
+              Send to customer&apos;s app
+            </button>
+          </div>
+          {otherWhen && !otherOk && (
+            <p className="mt-1 text-xs text-red-700">Pick a time in the future.</p>
+          )}
+          <p className="mt-1.5 text-xs text-muted">
+            They get a notification on their phone and reply by suggesting a
+            time in the app.
+          </p>
+        </div>
+      )}
+      {noApp && (
+        <p className="mt-2 text-xs text-[#9a6417]">
+          {first === "there" ? "The customer" : first} doesn&apos;t have app
+          notifications on.{" "}
+          <a
+            href={whatsappLink(
+              customer.phone,
+              `Hi ${first}, ${nannyName} isn't free on ${when}. Would ${istWhen(noApp)} work for you instead?`,
+            )}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 font-semibold text-[#1a7f45] underline underline-offset-2"
+          >
+            <MessageCircle className="size-3" aria-hidden="true" /> Send it on
+            WhatsApp
+          </a>
+        </p>
+      )}
+      {ts?.at && !noApp && (
+        <p className="mt-2 text-xs text-muted">
+          You suggested {istWhen(ts.at.toDate())}
+          {ts.sentAt ? ` · sent ${formatReceived(toDate(ts.sentAt))}` : ""}
+          {ts.delivered ? " · notified in the app" : " · not delivered (no app notifications)"}
+        </p>
+      )}
       <p className="mt-1.5 text-xs text-muted">
         Confirm books the interview at this time; the customer&apos;s app then
         shows it as scheduled. &ldquo;She isn&apos;t free then&rdquo; asks the
@@ -2801,7 +3039,8 @@ function RefundBox({
         </span>
       </div>
 
-      {(isAdmin || viaCashfree) &&
+      {CASHFREE_REFUNDS_ENABLED &&
+        (isAdmin || viaCashfree) &&
         (r.status === "pending" || r.status === "initiated" || viaCashfree) && (
           <CashfreeRefunds
             c={c}
@@ -2848,13 +3087,15 @@ function RefundBox({
             </button>
           )}
         </div>
-      ) : r.status === "initiated" ? null : r.status === "pending" &&
-        cfLive.length ? null : r.status === "pending" ? (
+      ) : r.status === "initiated" && CASHFREE_REFUNDS_ENABLED ? null : r.status === "pending" &&
+        cfLive.length && CASHFREE_REFUNDS_ENABLED ? null : r.status === "pending" || r.status === "initiated" ? (
         <div className="mt-3 rounded-xl bg-white p-3 ring-1 ring-line">
           <p className="text-xs text-muted">
-            {isAdmin
-              ? "Refunded another way (bank transfer, or a payment outside Cashfree)? Record it here."
-              : "An admin starts the refund from here. If it was refunded another way, record it here."}
+            {!CASHFREE_REFUNDS_ENABLED
+              ? "Once the customer has been refunded (Cashfree dashboard, bank transfer or cash), record it here. This doesn't send any money."
+              : isAdmin
+                ? "Refunded another way (bank transfer, or a payment outside Cashfree)? Record it here."
+                : "An admin starts the refund from here. If it was refunded another way, record it here."}
           </p>
           <div className="mt-2 grid gap-2 sm:grid-cols-3">
             <label className="text-xs text-muted">

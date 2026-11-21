@@ -59,6 +59,11 @@ export type Nanny = {
   verified?: boolean;
   skills: string[];
   status: NannyStatus;
+  /**
+   * The day she can start working ("YYYY-MM-DD"), for nannies who have
+   * onboarded but join a few days later. Empty = she can start now.
+   */
+  startDate?: string | null;
   /** Aadhaar and BGV report (Storage paths only; admins open them). */
   documents?: Partial<Record<DocKind, NannyDocument>>;
   /** Set while she's placed with a family. */
@@ -69,6 +74,8 @@ export type Nanny = {
   } | null;
   /** Internal, never shown to customers. */
   notes?: string;
+  /** Blocked by an admin: never suggested or shared with families. Admins only set or clear it. */
+  block?: NannyBlock | null;
   createdAt?: Timestamp | null;
   /** Who first added her. Set once; edits never change it. */
   createdBy?: string | null;
@@ -78,8 +85,121 @@ export type Nanny = {
 
 export type NannyInput = Omit<
   Nanny,
-  "id" | "createdAt" | "createdBy" | "updatedAt" | "updatedBy"
+  "id" | "createdAt" | "createdBy" | "updatedAt" | "updatedBy" | "block"
 >;
+
+/* ---------------- blocking (admins only) ---------------- */
+
+export type BlockReason =
+  | "misbehaved"
+  | "smoking"
+  | "drinking"
+  | "theft"
+  | "absconded"
+  | "child_safety"
+  | "fake_documents"
+  | "other";
+
+/** Same list as BLOCK_REASONS in the website repo's firestore.rules. */
+export const BLOCK_REASONS: { value: BlockReason; label: string }[] = [
+  { value: "misbehaved", label: "Misbehaved with the family" },
+  { value: "smoking", label: "Smoking" },
+  { value: "drinking", label: "Drinking / alcohol" },
+  { value: "theft", label: "Theft or stealing" },
+  { value: "absconded", label: "Left the job without notice" },
+  { value: "child_safety", label: "Child safety concern" },
+  { value: "fake_documents", label: "Fake documents or identity" },
+  { value: "other", label: "Other" },
+];
+
+export const blockReasonLabel = (r: BlockReason) =>
+  BLOCK_REASONS.find((x) => x.value === r)?.label ?? "Other";
+
+/** "Smoking, Drinking / alcohol". */
+export const blockReasonsLabel = (rs: BlockReason[]) =>
+  rs.map(blockReasonLabel).join(", ") || "Other";
+
+export type NannyBlock = {
+  /** One or more, in BLOCK_REASONS order. */
+  reasons: BlockReason[];
+  /** What happened. Required when "Other" is ticked. */
+  note: string | null;
+  by: string;
+  at: Timestamp | null;
+};
+
+export const isBlocked = (n: Pick<Nanny, "block">) => !!n.block;
+
+/* ---------------- start date ---------------- */
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Today in the browser's time zone, as "YYYY-MM-DD" (IST for the team). */
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Her start date, if it's still in the future (else null: she can start now). */
+export function upcomingStart(n: Pick<Nanny, "startDate">, today = todayISO()) {
+  return n.startDate && ISO_DATE.test(n.startDate) && n.startDate > today
+    ? n.startDate
+    : null;
+}
+
+/** "2026-11-25" → "25 Nov" (adds the year when it isn't this year). */
+export function formatStartDate(iso: string) {
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    ...(d.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}),
+  });
+}
+
+export const BLOCK_NOTE_MAX = 500;
+
+export async function blockNanny(
+  id: string,
+  picked: BlockReason[],
+  note: string,
+  by: string,
+) {
+  const reasons = BLOCK_REASONS.map((r) => r.value).filter((r) => picked.includes(r));
+  if (!reasons.length) throw new Error("Pick at least one reason.");
+  const text = note.trim().slice(0, BLOCK_NOTE_MAX);
+  if (reasons.includes("other") && !text) throw new Error("Write what happened.");
+  await updateDoc(doc(db(), "nannies", id), {
+    block: { reasons, note: text || null, by, at: serverTimestamp() },
+    updatedAt: serverTimestamp(),
+    updatedBy: by,
+  });
+}
+
+export async function unblockNanny(id: string, by: string) {
+  await updateDoc(doc(db(), "nannies", id), {
+    block: deleteField(),
+    updatedAt: serverTimestamp(),
+    updatedBy: by,
+  });
+}
+
+function normaliseBlock(v: unknown): NannyBlock | null {
+  if (!v || typeof v !== "object") return null;
+  const b = v as Record<string, unknown>;
+  const known = (r: unknown): r is BlockReason =>
+    BLOCK_REASONS.some((x) => x.value === r);
+  // `reasons` (list); tolerate a single `reason` from early test data.
+  const raw = Array.isArray(b.reasons) ? b.reasons : [b.reason];
+  const reasons = raw.filter(known);
+  return {
+    reasons: reasons.length ? reasons : ["other"],
+    note: typeof b.note === "string" && b.note.trim() ? b.note.trim() : null,
+    by: typeof b.by === "string" ? b.by : "",
+    at: (b.at as Timestamp) ?? null,
+  };
+}
 
 export const NANNY_STATUS_META: Record<
   NannyStatus,
@@ -236,9 +356,14 @@ export function normaliseNanny(id: string, d: Record<string, unknown>): Nanny {
     verified: d.verified !== false,
     skills: arr(d.skills),
     status,
+    startDate:
+      typeof d.startDate === "string" && ISO_DATE.test(d.startDate)
+        ? d.startDate
+        : null,
     placement: (d.placement as Nanny["placement"]) ?? null,
     documents: (d.documents as Nanny["documents"]) ?? {},
     notes: typeof d.notes === "string" ? d.notes : "",
+    block: normaliseBlock(d.block),
     createdAt: (d.createdAt as Timestamp) ?? null,
     createdBy: str(d.createdBy),
     updatedAt: (d.updatedAt as Timestamp) ?? null,

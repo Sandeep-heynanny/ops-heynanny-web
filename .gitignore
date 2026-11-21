@@ -60,3 +60,10 @@ backups/
 
 # temporary build-check archive
 .ops-src.tgz
+
+# Firebase CLI logs
+firebase-debug.log
+firebase-debug.*.log
+
+# copy-to-staging: salt for fake names/phones (keeps them stable between runs)
+scripts/.staging-salt

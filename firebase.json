@@ -13,7 +13,10 @@
         "*-firebase-adminsdk-*.json",
         "firebase-debug.log",
         "firebase-debug.*.log",
-        ".ops-src.tgz"
+        ".ops-src.tgz",
+        ".env.staging",
+        "scripts/.staging-salt",
+        ".claude-audit-src.tgz"
       ]
     }
   ]

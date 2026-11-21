@@ -135,7 +135,9 @@ export function AuthProvider({
             ? "This website isn't allowed to sign in yet. Add it under Firebase → Authentication → Settings → Authorized domains."
             : code === "auth/popup-blocked"
               ? "Your browser blocked the sign-in window. Allow pop-ups for this site and try again."
-              : "Sign-in failed. Please try again.",
+              : code === "auth/operation-not-allowed" || code === "auth/configuration-not-found"
+                ? "Google sign-in isn't switched on for this Firebase project. Turn it on under Authentication → Sign-in method."
+                : `Sign-in failed. Please try again.${code ? ` (${code})` : ""}`,
       });
     }
   }, []);

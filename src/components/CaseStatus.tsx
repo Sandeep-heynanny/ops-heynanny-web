@@ -5,7 +5,7 @@
  * sales can tell the customer what's happening. Changes are made by the
  * servicing team on the Servicing page.
  */
-import { ArrowRight, CalendarClock, ExternalLink, Phone } from "lucide-react";
+import { ArrowRight, CalendarClock, ExternalLink, IndianRupee, Phone } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import {
@@ -15,12 +15,15 @@ import {
   nextStep,
   StagePill,
 } from "@/components/CaseProgress";
+import { confirmDialog } from "@/components/ConfirmDialog";
 import { UpdatedBy } from "@/components/UpdatedBy";
 import type { Staff } from "@/lib/auth";
-import { canSeeServicing } from "@/lib/firebase";
+import { canSeeEnquiries, canSeeServicing } from "@/lib/firebase";
 import { formatDateTime, toDate } from "@/lib/format";
+import { markPaymentCollected } from "@/lib/leads";
 import {
   caseRef,
+  collectDue,
   needsForm,
   openRequests,
   readNotes,
@@ -49,11 +52,14 @@ const TRAVEL_MODE_LABEL = new Map(
 
 export function CaseStatus({
   caseId,
+  leadId,
   staff,
   people,
   demo,
 }: {
   caseId: string;
+  /** The enquiry, for "Full payment collected". */
+  leadId: string;
   staff: Staff;
   people: StaffMember[];
   demo: boolean;
@@ -73,7 +79,10 @@ export function CaseStatus({
       ) : error || !c ? (
         <p className="text-sm text-red-700">{error ?? "Servicing case not found."}</p>
       ) : (
-        <CaseBody c={c} now={now} staff={staff} people={people} />
+        <>
+          {canSeeEnquiries(staff.role) && <CollectPayment c={c} leadId={leadId} people={people} />}
+          <CaseBody c={c} now={now} staff={staff} people={people} />
+        </>
       )}
     </section>
   );
@@ -252,6 +261,69 @@ function CaseBody({
 
       <UpdatedBy by={c.updatedBy} at={toDate(c.updatedAt)} people={people} className="mt-3" />
     </>
+  );
+}
+
+/**
+ * Nanny placed but not paid in full (Payment Half / Pre / Token): sales collect
+ * the rest and mark it here. Once marked, a line shows who collected it.
+ */
+function CollectPayment({ c, leadId, people }: { c: ServicingCase; leadId: string; people: StaffMember[] }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const r = c.intake;
+  if (!r) return null;
+  if (!collectDue(c)) {
+    if (!r.paymentCollectedAt) return null;
+    return (
+      <p className="mb-3 flex items-center gap-1.5 rounded-xl bg-[#dcefe1] px-3 py-2 text-xs font-semibold text-success">
+        <IndianRupee className="size-3.5" aria-hidden="true" />
+        Full payment collected{r.paymentWas ? ` (was ${r.paymentWas})` : ""}
+        {r.paymentCollectedBy ? ` by ${staffName(r.paymentCollectedBy, people)}` : ""}
+        {r.paymentCollectedAt ? ` · ${when(r.paymentCollectedAt as Date)}` : ""}
+      </p>
+    );
+  }
+  const collect = async () => {
+    if (
+      !(await confirmDialog({
+        title: "Full payment collected?",
+        message: `Mark ${c.customer.name ?? "this customer"}'s payment as Full. Do this only once the rest of the amount is received.`,
+        confirmLabel: "Yes, collected",
+        cancelLabel: "Not yet",
+      }))
+    )
+      return;
+    setBusy(true);
+    setError(null);
+    try {
+      await markPaymentCollected({ id: leadId });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div role="alert" className="mb-4 rounded-xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-200">
+      <p className="flex items-center gap-1.5 font-bold">
+        <IndianRupee className="size-4" aria-hidden="true" />
+        Collect the full payment
+      </p>
+      <p className="mt-0.5 text-xs">
+        {c.placement?.nanny.name ?? "The nanny"} is placed, but the Servicing form says Payment: <b>{r.payment}</b>
+        {typeof r.amountPaid === "number" ? ` (${inr(r.amountPaid)} paid)` : ""}. Collect the rest from the customer, then mark it here.
+      </p>
+      {error && <p className="mt-1 text-xs font-semibold">{error}</p>}
+      <button
+        type="button"
+        onClick={collect}
+        disabled={busy}
+        className="mt-2 h-9 rounded-full bg-red-700 px-4 text-sm font-semibold text-white hover:bg-red-800 disabled:opacity-50"
+      >
+        {busy ? "Saving…" : "Full payment collected"}
+      </button>
+    </div>
   );
 }
 

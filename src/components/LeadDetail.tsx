@@ -597,6 +597,7 @@ function Panel({
           {l.ops?.servicingCaseId && (
             <CaseStatus
               caseId={l.ops.servicingCaseId}
+              leadId={l.id}
               staff={staff}
               people={allStaff ?? staffList}
               demo={demo}

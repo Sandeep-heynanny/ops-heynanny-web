@@ -146,7 +146,7 @@ export function caseBucket(
 /** Cases still waiting for a nanny (from the moment they arrive): these age. */
 const AGING_BUCKETS: Bucket[] = ["form_pending", "new", "profiles_shared", "interviews", "approved"];
 
-export type AgingId = "priority" | "two" | "one" | "today";
+export type AgingId = "priority" | "three" | "two" | "one" | "today";
 export const AGING_META: Record<
   AgingId,
   { label: string; tile: string; text: string; edge: string }
@@ -157,11 +157,13 @@ export const AGING_META: Record<
     text: "text-red-700",
     edge: "border-l-4 border-l-red-500",
   },
+  // Exactly 3 days (Sandeep, 2026-11-21); more than 3 is Priority.
+  three: { label: "3 days", tile: "border-orange-300 bg-orange-50", text: "text-orange-800", edge: "border-l-4 border-l-orange-400" },
   two: { label: "2 days", tile: "border-[#f1d9a6] bg-[#fff6e5]", text: "text-[#9a6417]", edge: "" },
   one: { label: "1 day", tile: "border-[#c9d6f2] bg-[#eef3fd]", text: "text-[#24456e]", edge: "" },
   today: { label: "Today", tile: "border-line bg-paper", text: "text-muted", edge: "" },
 };
-export const AGING_ORDER: AgingId[] = ["priority", "two", "one", "today"];
+export const AGING_ORDER: AgingId[] = ["priority", "three", "two", "one", "today"];
 
 /** When the case arrived in servicing (created), else when its Servicing form came in. */
 function servicingSince(c: Pick<ServicingCase, "intake" | "createdAt">): Date | null {
@@ -180,7 +182,21 @@ export function caseAgeDays(c: ServicingCase, now: Date): number | null {
 
 export function agingOf(days: number | null): AgingId | null {
   if (days === null) return null;
-  return days >= 3 ? "priority" : days === 2 ? "two" : days === 1 ? "one" : "today";
+  return days > 3 ? "priority" : days === 3 ? "three" : days === 2 ? "two" : days === 1 ? "one" : "today";
+}
+
+/**
+ * The nanny is placed but the Servicing form says the customer hasn't paid in
+ * full (Payment is Half, Pre or Token): sales must collect the rest (Sandeep, 2026-11-20).
+ */
+export function collectDue(c: ServicingCase): boolean {
+  const b = caseBucket(c);
+  return (
+    (b === "placed" || b === "travel" || b === "joined") &&
+    !!c.intake &&
+    !!c.intake.payment &&
+    c.intake.payment !== "Full"
+  );
 }
 
 export const bucketMeta = (b: Bucket) =>
@@ -388,6 +404,10 @@ export type Cancellation = {
   refund: Refund;
 };
 
+/** Cancelled and the refund is done (marked refunded, or Cashfree reports it paid). */
+export const refunded = (c: Pick<ServicingCase, "stage" | "cancellation">) =>
+  c.stage === "cancelled" && c.cancellation?.refund.status === "processed";
+
 export const refundDue = (c: Pick<ServicingCase, "stage" | "cancellation">) =>
   c.stage === "cancelled" &&
   (c.cancellation?.refund.status === "pending" ||
@@ -401,6 +421,11 @@ export type Intake = ServicingFormValue & {
   editedAt?: Timestamp | Date | null;
   editedBy?: string | null;
   leadId?: string | null;
+  /** Sales marked the rest of the payment collected (Payment became Full). */
+  paymentCollectedAt?: Timestamp | Date | null;
+  paymentCollectedBy?: string | null;
+  /** What Payment said before (Half / Pre / Token). */
+  paymentWas?: string | null;
 };
 
 export type CasePayment = {
@@ -454,6 +479,15 @@ export type InterviewRequest = {
   nannyName: string;
   handledBy: string | null;
   handledAt: Timestamp | null;
+  /** A time the team suggested back, sent to the customer as a push notification. */
+  teamSuggested?: {
+    at: Timestamp;
+    note: string | null;
+    by: string;
+    sentAt: Timestamp | null;
+    /** False when the customer has no app / notifications off. */
+    delivered: boolean;
+  } | null;
 };
 
 export const REQUEST_META: Record<
